@@ -1,4 +1,4 @@
-# Territory — prototype
+# Territory — prototype by Kalyan Sankar
 
 A playable implementation of the Territory design doc: six rounds, face-down
 placement, ordered reveal, planet slots with conditions and rewards, plus a
@@ -8,6 +8,8 @@ The game itself has no dependencies: open `game/index.html` in a browser
 (double-clicking works, `file://` is fine). Only Google Fonts is fetched from the
 network, and the game still runs without it. Putting it on the web, with online
 rooms, is in **[DEPLOY.md](DEPLOY.md)**.
+
+Claude AI was used extensively.
 
 ## Files
 
