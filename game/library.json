@@ -382,7 +382,7 @@
    "power": 1,
    "art": {
     "t": "emoji",
-    "v": "🦈"
+    "v": "🦇"
    },
    "fx": [
     {
@@ -457,7 +457,7 @@
    "id": "card-21",
    "name": "Skelly",
    "cost": 5,
-   "power": 4,
+   "power": 3,
    "art": {
     "t": "emoji",
     "v": "💀"
@@ -680,7 +680,7 @@
      "if": {
       "src": "enemyMaxPower",
       "op": "<",
-      "val": 6
+      "val": 5
      }
     }
    ],
@@ -1267,6 +1267,115 @@
   },
   {
    "id": "card-55",
+   "name": "Rambo",
+   "cost": 3,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🐏"
+   },
+   "fx": [
+    {
+     "v": "move",
+     "dest": "random",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-56",
+   "name": "Queen Joy",
+   "cost": 5,
+   "power": 7,
+   "art": {
+    "t": "emoji",
+    "v": "🦄"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "n": 7,
+     "target": {
+      "player": "self",
+      "rule": "choice"
+     },
+     "nFrom": "hand"
+    },
+    {
+     "v": "draw",
+     "n": 5,
+     "from": "deck"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-57",
+   "name": "Wormington",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🪱"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "when": "discarded",
+     "from": "prev",
+     "at": "choice",
+     "side": "self"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-58",
+   "name": "Mercy",
+   "cost": 3,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🕊️"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "graveIn",
+     "from": "deck"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-59",
+   "name": "Tuft",
+   "cost": 1,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🪶"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "drawn",
+     "from": "deck"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-60",
    "name": "Saguaro",
    "cost": 3,
    "power": 5,
@@ -1277,39 +1386,19 @@
    "fx": [
     {
      "v": "burn",
-     "n": 2,
+     "n": 1,
      "when": "activate",
      "actCost": 1,
+     "actUses": 2,
      "target": {
       "player": "choose",
       "here": true,
       "rule": "choice"
-     },
-     "actUses": 2
+     }
     }
    ],
    "token": false,
    "rarity": "elite"
-  },
-  {
-   "id": "card-56",
-   "name": "Scavenger",
-   "cost": 3,
-   "power": 4,
-   "art": {
-    "t": "emoji",
-    "v": "🪰"
-   },
-   "fx": [
-    {
-     "v": "givePower",
-     "t": "self",
-     "n": 1,
-     "when": "gameEnd",
-     "nFrom": "energy"
-    }
-   ],
-   "token": false
   }
  ],
  "tokens": [
@@ -1816,6 +1905,7 @@
     "card-12",
     "card-12",
     "card-14",
+    "card-14",
     "card-15",
     "card-16",
     "card-17",
@@ -1827,15 +1917,12 @@
     "card-23",
     "card-2",
     "card-2",
-    "card-5",
     "card-7",
-    "card-5",
     "card-9",
     "card-11",
     "card-11",
     "card-13",
     "card-21",
-    "card-24",
     "card-25",
     "card-25",
     "card-26",
@@ -1873,9 +1960,16 @@
     "card-51",
     "card-52",
     "card-53",
-    "card-18",
     "card-54",
+    "card-5",
+    "card-24",
     "card-55",
+    "card-56",
+    "card-57",
+    "card-59",
+    "card-59",
+    "card-58",
+    "card-60",
     "card-56"
    ]
   },
@@ -1890,8 +1984,10 @@
     "card-24",
     "card-11",
     "card-11",
+    "card-11",
     "card-13",
     "card-21",
+    "card-9",
     "card-9",
     "card-3",
     "card-4",
@@ -1906,6 +2002,7 @@
     "card-20",
     "card-2",
     "card-1",
+    "card-14",
     "card-14",
     "card-16",
     "card-17",
@@ -1932,10 +2029,11 @@
     "card-48",
     "card-49",
     "card-49",
-    "card-18",
-    "card-31",
-    "card-36",
-    "card-54"
+    "card-50",
+    "card-56",
+    "card-55",
+    "card-59",
+    "card-58"
    ]
   }
  ],
@@ -1943,12 +2041,12 @@
   "players": 2,
   "planets": 5,
   "rounds": 6,
-  "hide": true,
+  "hide": false,
   "choiceTimer": 30,
   "kinds": [
    "human",
-   "bot",
-   "bot",
+   "human",
+   "human",
    "bot"
   ],
   "deckOf": [
@@ -1957,6 +2055,9 @@
    "d2",
    "d2"
   ],
-  "sandbox": false
+  "sandbox": false,
+  "onlineName": "Kal",
+  "turnTimer": 0,
+  "turnTimerCustom": false
  }
 }

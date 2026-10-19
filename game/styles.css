@@ -10,8 +10,9 @@
   --ui-line-2:rgba(12,32,34,.28);
   --ui-text:#0f1c1f;
   --ui-dim:#4a5d60;
-  --ui-faint:#78888b;
+  --ui-faint:#5b6c6f;
   --ui-accent:#0f7a5f;
+  --ui-danger:#b3261e;
   --ui-accent-ink:#ffffff;
   --shadow:0 1px 2px rgba(7,20,23,.10), 0 8px 24px rgba(7,20,23,.08);
 
@@ -24,7 +25,7 @@
   --line-2:rgba(190,235,225,.30);
   --ink:#eaf3f0;
   --ink-dim:#8fa5a4;
-  --ink-faint:#63797a;
+  --ink-faint:#859b9c;
 
   /* identity */
   --energy:#f5b95c;
@@ -48,8 +49,9 @@
     --ui-line-2:rgba(190,235,225,.30);
     --ui-text:#eaf3f0;
     --ui-dim:#8fa5a4;
-    --ui-faint:#63797a;
+    --ui-faint:#859b9c;
     --ui-accent:#4fd6b0;
+    --ui-danger:#f0796f;
     --ui-accent-ink:#04211b;
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
   }
@@ -63,8 +65,9 @@
   --ui-line-2:rgba(190,235,225,.30);
   --ui-text:#eaf3f0;
   --ui-dim:#8fa5a4;
-  --ui-faint:#63797a;
+  --ui-faint:#859b9c;
   --ui-accent:#4fd6b0;
+  --ui-danger:#f0796f;
   --ui-accent-ink:#04211b;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
 }
@@ -88,12 +91,20 @@ img{max-width:100%}
 @media (prefers-reduced-motion: reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important}}
 
 #app{min-height:100dvh;display:flex;flex-direction:column}
+/* The board and the full-screen beats over it are always dark, in either theme,
+   so whatever sits on them (buttons, chips, fields) uses the dark chrome: light
+   text on dark. The light theme only changes the menus and sheets. */
+.board,.round-screen,.dice-screen,.beat,.veil,.pick-banner,.net-banners,.choice-side,.title-wrap,.result-hero{
+  --ui-bg:#071417; --ui-bg-2:#040e10; --ui-panel:rgba(255,255,255,.07); --ui-panel-2:rgba(255,255,255,.12);
+  --ui-line:rgba(190,235,225,.16); --ui-line-2:rgba(190,235,225,.32);
+  --ui-text:#eaf3f0; --ui-dim:#a3b6b5; --ui-faint:#859b9c; --ui-accent:#4fd6b0; --ui-accent-ink:#04211b; --ui-danger:#f0796f;
+}
 
 /* ============ GENERIC UI ============ */
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
   padding:11px 18px;border-radius:99px;background:var(--ui-panel);
-  border:1px solid var(--ui-line); font-weight:500; color:inherit;
+  border:1px solid var(--ui-line); font-weight:500; color:var(--ui-text);
   transition:transform .12s ease, background .15s ease, border-color .15s ease;
 }
 .btn:active{transform:scale(.97)}
@@ -102,7 +113,7 @@ img{max-width:100%}
 .btn.sm{padding:7px 13px;font-size:13.5px}
 .btn.wide{width:100%}
 .btn[disabled]{opacity:.4;pointer-events:none}
-.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.btn.danger{color:var(--ui-danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
 
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}
 .field > span{font-size:12.5px;color:var(--ui-dim)}
@@ -145,8 +156,8 @@ textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
 .title-actions{display:flex;flex-direction:column;gap:9px;position:relative;margin-top:8px}
 .title-actions .btn{background:rgba(255,255,255,.07);border-color:var(--line);color:var(--ink);justify-content:flex-start;padding:14px 20px}
 .title-actions .btn.primary{background:var(--p1);color:#04211b;border-color:transparent}
-.title-actions .btn .k{margin-left:auto;color:var(--ink-faint);font-size:13px}
-.title-actions .btn.primary .k{color:rgba(4,33,27,.6)}
+.title-actions .btn .k{margin-left:auto;color:var(--ink-dim);font-size:13px}
+.title-actions .btn.primary .k{color:rgba(4,33,27,.82)}
 
 /* ============ SUBPAGE CHROME ============ */
 .topbar{
@@ -222,7 +233,7 @@ textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
 }
 .orb img{width:100%;height:100%;object-fit:cover}
 .planet-name{font-family:var(--font-d);font-weight:700;font-size:14.5px;line-height:1.15;letter-spacing:-.01em}
-.planet-sub{font-size:11.5px;color:var(--ink-faint)}
+.planet-sub{font-size:11.5px;color:var(--ink-dim)}
 .tally{display:flex;flex-direction:column;gap:3px;margin-top:1px}
 .tally-row{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-dim)}
 .bar{flex:1;height:4px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden}
@@ -232,7 +243,7 @@ textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
 .crown{color:var(--pc)}
 
 .side{display:flex;flex-direction:column;gap:5px;transition:opacity .18s ease}
-.side-label{font-size:11px;color:var(--ink-faint);display:flex;align-items:center;gap:5px}
+.side-label{font-size:11px;color:var(--ink-dim);display:flex;align-items:center;gap:5px}
 .side-label.you{color:var(--ink-dim)}
 .slots{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
 
@@ -407,7 +418,7 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .card.big .nm{font-size:13px}
 .card.big .tx{font-size:11px}
 
-.empty-note{padding:18px 12px;color:var(--ink-faint);font-size:13.5px;text-align:center}
+.empty-note{padding:18px 12px;color:var(--ui-faint);font-size:13.5px;text-align:center}
 
 /* ============ THE BEAT BETWEEN PHASES ============
    A bar drops in over the top of the board naming who is up and what happens
@@ -465,7 +476,8 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .log .rd{color:var(--ui-faint);margin-top:8px;font-family:var(--font-d);font-size:11.5px}
 
 /* ============ RESULTS ============ */
-.result-hero{padding:26px 18px;text-align:center;background:linear-gradient(var(--board-bg-2),transparent);color:var(--ink)}
+.result-hero{padding:26px 18px;text-align:center;background:linear-gradient(var(--board-bg-2),var(--board-bg));color:var(--ink)}
+.result-hero .tiny,.result-hero .muted{color:var(--ink-dim)}
 .result-hero .who{font-family:var(--font-d);font-size:clamp(28px,9vw,44px);font-weight:800;letter-spacing:-.03em;color:var(--pc)}
 .score-line{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ui-line);font-size:14px}
 .score-line .pl{flex:1;font-weight:600}
@@ -503,8 +515,7 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 
 /* ---- importing a table of cards ---- */
 .flagdot{font-size:10.5px;font-weight:600;padding:0 6px;border-radius:99px;
-  background:color-mix(in srgb,var(--energy) 30%,transparent);
-  border:1px solid color-mix(in srgb,var(--energy) 55%,transparent);color:var(--ui-text)}
+  background:var(--energy);border:1px solid color-mix(in srgb,var(--energy) 70%,#000);color:#2b1a02}
 .imp-list{display:flex;flex-direction:column;border:1px solid var(--ui-line);border-radius:var(--r-m);overflow:hidden}
 .imp{border-bottom:1px solid var(--ui-line);background:var(--ui-panel);padding:9px 12px}
 .imp:last-child{border-bottom:none}
@@ -760,7 +771,7 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .rs-stat{font-size:12.5px;color:var(--ink-dim);white-space:nowrap}
 .rs-stat b{color:var(--ink)}
 .rs-next{margin:2px 0 0;font-size:13px;color:var(--ink-dim);max-width:34ch}
-.rs-tap{font-size:12px;color:var(--ink-faint)}
+.rs-tap{font-size:12px;color:var(--ink-dim)}
 .rs-bar{width:120px;height:3px;border-radius:3px;background:var(--line);overflow:hidden}
 .rs-bar i{display:block;height:100%;background:var(--p1);transform-origin:0 50%;animation:rsBar linear both}
 @keyframes rsBar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
@@ -967,3 +978,51 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .nb-txt{flex:1;min-width:0}
 .net-banner .btn{flex:none;color:var(--ink);border-color:var(--line-2)}
 @keyframes bannerDrop{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+
+/* ============ THE ROUND OPENS ============
+   Round number, standings and the roll for first on one screen. Each player
+   is one row — name, planets winning, die — so their numbers group together
+   and the columns line up down the screen. */
+.round-open .rs-inner{gap:12px}
+.ro-head,.ro-row{display:grid;grid-template-columns:minmax(0,1fr) 84px 60px;align-items:center;gap:10px;width:100%}
+.ro-head{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-dim);padding:0 12px;margin-bottom:-4px}
+.ro-head span:nth-child(2),.ro-head span:nth-child(3){text-align:center}
+.ro-rows{width:100%;display:flex;flex-direction:column;gap:8px}
+.ro-row.die-seat{flex-direction:initial;padding:9px 12px;border-radius:var(--r-m);background:rgba(255,255,255,.05);border:1px solid var(--line);
+  transform:none;text-align:left}
+.ro-row.lead{border-color:color-mix(in srgb,var(--pc) 55%,transparent)}
+.ro-name{display:flex;align-items:center;gap:8px;min-width:0}
+.ro-name b{font-size:15px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ro-won{text-align:center;font-size:13px;color:#b9cbc8;font-variant-numeric:tabular-nums}
+.ro-won b{font-size:20px;color:var(--ink);font-weight:800;margin-right:2px}
+.ro-row .die{width:46px;height:46px;border-radius:12px;padding:7px;justify-self:center}
+.ro-row .die i{width:8px;height:8px}
+.ro-row.die-seat.win{transform:none;background:color-mix(in srgb,var(--pc) 16%,transparent);border-color:var(--pc)}
+.ro-row.die-seat.win .ro-name b{color:var(--ink)}
+.ro-row.die-seat.lose{opacity:1;transform:none}
+.ro-row.die-seat.lose .die{opacity:.45;transform:scale(.9)}
+
+/* "You may …": the effect, then the two answers side by side */
+.opt-say{margin:-2px 0 14px;font-size:15px;line-height:1.4;color:var(--ui-text)}
+.opt-row{gap:10px}
+.opt-row .btn{flex:1}
+
+/* An opponent's discard: their card turns up face up under the top bar,
+   long enough to read with its owner named under it, then crumbles. */
+.fx-ghost.fx-reveal{left:50%;top:calc(92px + env(safe-area-inset-top));transform:translateX(-50%);width:150px;z-index:66;
+  display:flex;flex-direction:column;align-items:center;gap:8px;animation:revealIn .24s cubic-bezier(.2,.9,.3,1.25) both}
+.fx-ghost.fx-reveal > .card{position:relative;inset:auto;height:auto;width:150px;box-shadow:0 18px 40px -14px rgba(0,0,0,.85), 0 0 0 2px var(--pc)}
+.fx-cap{display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;
+  background:rgba(7,20,23,.92);border:1px solid var(--line-2);color:var(--ink);transition:opacity .25s ease}
+.fx-cap.out{opacity:0}
+@keyframes revealIn{from{opacity:0;transform:translate(-50%,-10px) scale(.9)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+
+/* Summoning: the open slots the card may go to, and nothing else, glow */
+.slot.summon-target{cursor:pointer;z-index:2;border-style:solid;border-color:var(--fxc);
+  background:color-mix(in srgb,var(--fxc) 16%,transparent);box-shadow:0 0 0 1.5px var(--fxc),0 0 18px -4px var(--fxc);
+  animation:pickPulse 1.3s ease-in-out infinite}
+.slot.summon-target .slot-mark{color:var(--ink);font-weight:700}
+.slot.summon-target:hover,.slot.summon-target:focus-visible{transform:scale(1.06)}
+
+/* the Play screen: a quiet label over the online half */
+.op-sect{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-dim);margin:2px 0 -4px;font-weight:600}

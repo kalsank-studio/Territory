@@ -567,7 +567,7 @@ function singleTargetPhrase(T){
   if(T.player==='self'){
     s = T.rule==='random' ? 'a random card of yours'
       : sup ? 'your '+sup+' card'
-      : 'a card of your choice';
+      : 'your card of choice';
   }else if(T.player==='random'){
     s = T.rule==='random' ? 'a random enemy card'
       : sup ? "a random opponent's "+sup+' card'
@@ -711,10 +711,12 @@ function fxText(fx){
   const sentences = [];
   let cur = null, linked = false;
   fx.forEach(f=>{
-    const raw = verbPhrase(f);
-    if(!raw) return;
+    const plain = verbPhrase(f);
+    if(!plain) return;
+    /* An optional effect reads "You may …" — or, after "in order to", ends "(optional)". */
+    const raw = f.optional ? 'You may '+lc(plain) : plain;
     const w = whenOf(f);
-    if(cur && linked && cur.when===w) cur.text += ', in order to '+lc(raw);
+    if(cur && linked && cur.when===w) cur.text += ', in order to '+lc(plain)+(f.optional?' (optional)':'');
     else if(cur && cur.when===w && w!=='reveal') cur.text += '; '+lc(raw);
     else { cur = {when:w, text:raw, first:f}; sentences.push(cur); }
     linked = !!f.then;
@@ -954,7 +956,20 @@ function readCompareValue(phrase){
   return src ? {valFrom: src} : null;
 }
 
+/** "You may …" at the front, or "(optional)" at the end: the owner is asked
+    first, and can skip it. */
 function parseClause(cl){
+  let text = String(cl||'');
+  let optional = false;
+  const may = text.match(/^\s*(?:you may|optionally,?)\s+/i);
+  if(may){ optional = true; text = text.slice(may[0].length); }
+  const tag = text.match(/\s*\(optional\)\s*$/i);
+  if(tag){ optional = true; text = text.slice(0, tag.index); }
+  const r = parseClauseCore(text);
+  if(optional && r.fx) r.fx.optional = true;
+  return r;
+}
+function parseClauseCore(cl){
   const issues = [];
   let low = cl.toLowerCase().replace(/[\u2018\u2019]/g,"'").replace(/\s+/g,' ').trim();
   if(!low) return {fx:null, issues};
@@ -1063,7 +1078,7 @@ function parseClause(cl){
     if(single) f.target = single;
     else{
       const t = readTarget(phrase);
-      if(!t){ f.t = 'self'; issues.push(`No target in "${cl}" — read as this card. Say "a card of your choice", "an enemy card here", "the next card you play", "all enemy cards here", and so on.`); }
+      if(!t){ f.t = 'self'; issues.push(`No target in "${cl}" — read as this card. Say "your card of choice", "an enemy card here", "the next card you play", "all enemy cards here", and so on.`); }
       else f.t = t;
     }
   }
@@ -1267,7 +1282,7 @@ function readSingleTarget(low, mustBeOne){
   if(/\bthis card\b|\bitself\b/.test(low)) return null;
   const enemy = /\b(enemy|enemies|opposing|opponents?'?s?)\b/.test(low);
   const here = /\bhere\b|\bat this location\b|\bon this planet\b/.test(low);
-  const choice = /\bof your choice\b|\byou choose\b|\bchoose\b|\bchosen\b/.test(low);
+  const choice = /\bof your choice\b|\bcard of choice\b|\byou choose\b|\bchoose\b|\bchosen\b/.test(low);
   const random = /\brandom\b/.test(low);
   const randomOpp = /\brandom (opponent|player)/.test(low);
 
@@ -1280,7 +1295,7 @@ function readSingleTarget(low, mustBeOne){
   else if(random) rule = 'random';
 
   const singular = /\b(a|an|one)\s+(random\s+)?((enemy|friendly|allied|opposing)\s+)?card\b/.test(low)
-                || /\bcard of your choice\b/.test(low);
+                || /\bcard of your choice\b|\byour card of choice\b/.test(low);
 
   /* These already exist as group targets with exactly this meaning across
      every enemy at once — keep them there, so old cards read unchanged. */
@@ -2339,7 +2354,10 @@ function endOfRoundContinue(){
     pause('Final tally', 'Counting Power on every planet', finishGame);
     return;
   }
-  showRoundScreen(startRound);
+  /* One screen opens every round: the round, who is winning what, and the
+     roll for who goes first (startRound -> rollForFirst -> showDice). */
+  G.hold = true;
+  whenFxIdle(()=>{ G.hold = false; startRound(); });
 }
 function fireGameEnd(){
   G.fxQueue = [];
@@ -2482,6 +2500,8 @@ function autoResolveChoice(){
     case 'pickplanet': dispatch({t:'choose', seat, i:any(ch.options)}); break;
     case 'pickcard':   dispatch({t:'choose', seat, uid:any(ch.pool).card.uid}); break;
     case 'pickmode':   { const left = ch.live.filter(i=>!ch.picked.includes(i)); if(left.length) dispatch({t:'choose', seat, i:any(left)}); break; }
+    case 'optional':   dispatch({t:'choose', seat, i:1}); break;      // out of time: the ability goes ahead
+    case 'pickslot':   dispatch({t:'choose', seat, i:any(ch.options.map((_,k)=>k))}); break;
   }
 }
 setInterval(()=>{ try{ if(typeof G!=='undefined' && G) tickTimer(); }catch(e){ console.warn(e); } }, 200);
@@ -2493,7 +2513,7 @@ setInterval(()=>{ try{ if(typeof G!=='undefined' && G) tickTimer(); }catch(e){ c
    screen only show it: they tumble for DICE_ROLL_MS, land, and the winner is
    held up for DICE_HOLD_MS. Input waits for them (busy()), and so do bots,
    income Energy and the turn timer. A tap skips to the end. */
-const DICE_ROLL_MS = Math.max(PAUSE * 0.9, 30), DICE_HOLD_MS = Math.max(PAUSE * 0.8, 30);
+const DICE_ROLL_MS = Math.max(PAUSE * 0.9, 30), DICE_HOLD_MS = Math.max(PAUSE * 1.4, 30);   // the hold also lets the standings be read
 function rollForFirst(){
   let rolls, best, rerolls = 0;
   for(;;){
@@ -2539,18 +2559,43 @@ function showDice(){
 }
 const PIPS = {1:[4], 2:[0,8], 3:[0,4,8], 4:[0,2,6,8], 5:[0,2,4,6,8], 6:[0,2,3,5,6,8]};
 const pipsHTML = n => Array.from({length:9}, (_,i)=>`<i class="${PIPS[n].includes(i)?'on':''}"></i>`).join('');
+/** Planets each player is winning right now: most Power there, no tie. */
+function planetsWinning(){
+  const won = G.players.map(()=>0);
+  G.planets.forEach(pl=>{
+    const sc = planetScore(pl), best = Math.max(...sc);
+    if(best>0 && sc.filter(v=>v===best).length===1) won[sc.indexOf(best)]++;
+  });
+  return won;
+}
+/** The screen that opens each round: the round number, the planets each
+    player is winning, and everyone's die for who goes first. One row per
+    player holds all three of their numbers, so the eye reads across. */
 function diceHTML(){
   const d = UI.dice, roll = G.dice || {rolls:G.players.map(()=>1)};
   const first = G.first, landed = d.landed;
-  return `<div class="dice-screen ${landed?'landed':''}" data-act="dicego" role="dialog" aria-label="Rolling for who goes first">
+  const won = planetsWinning(), top = Math.max(...won);
+  const last = G.round===G.rounds;
+  const planets = G.planets.map(pl=>{
+    const sc = planetScore(pl), best = Math.max(...sc);
+    const lead = sc.filter(v=>v===best).length===1 && best>0 ? sc.indexOf(best) : null;
+    return `<span class="rs-planet" style="--po:${pl.hue};--pc:${lead==null?'var(--line-2)':PCOLORS[lead]}" title="${esc(pl.name)}">
+      <span class="rs-orb">${artHTML(pl.art, pl.name)}</span></span>`;
+  }).join('');
+  return `<div class="dice-screen round-open ${landed?'landed':''}" data-act="dicego" role="dialog" aria-label="Round ${G.round} of ${G.rounds}">
     <div class="rs-inner">
-      <div class="rs-kicker">Round ${G.round} \u00B7 who goes first?</div>
-      <div class="dice-row">${G.players.map((p,i)=>`
-        <div class="die-seat ${landed ? (i===first?'win':'lose') : ''}" style="--pc:${PCOLORS[i]}">
-          <div class="die" ${landed?'':'data-rolling'} style="--spin:${(i%2?-1:1)*(300+90*i)}deg;--delay:${i*60}ms" aria-label="${esc(p.name)} rolled ${landed?roll.rolls[i]:'\u2026'}">${pipsHTML(landed ? roll.rolls[i] : 1 + uiRnd(6))}</div>
-          <b>${esc(p.name)}</b>
+      <div class="rs-title">Round <em>${G.round}</em><span> of ${G.rounds}</span></div>
+      ${last?'<div class="rs-final">Final round</div>':''}
+      ${G.round>1 ? `<div class="rs-planets" aria-hidden="true">${planets}</div>` : ''}
+      <div class="ro-head" aria-hidden="true"><span></span><span>Winning</span><span>Roll</span></div>
+      <div class="ro-rows">${G.players.map((p,i)=>`
+        <div class="ro-row die-seat ${landed ? (i===first?'win':'lose') : ''} ${won[i]===top && top>0 ? 'lead' : ''}" style="--pc:${PCOLORS[i]}">
+          <span class="ro-name"><span class="dot"></span><b>${esc(p.name)}</b></span>
+          <span class="ro-won"><b>${won[i]}</b> of ${G.planets.length}</span>
+          <div class="die" ${landed?'':'data-rolling'} style="--spin:${(i%2?-1:1)*(300+90*i)}deg;--delay:${i*60}ms" aria-label="${esc(p.name)} rolled ${landed?roll.rolls[i]:'…'}">${pipsHTML(landed ? roll.rolls[i] : 1 + uiRnd(6))}</div>
         </div>`).join('')}</div>
-      <div class="dice-result">${landed ? `<span class="dot" style="--pc:${PCOLORS[first]}"></span><b style="color:${PCOLORS[first]}">${esc(G.players[first].name)}</b> goes first${roll.rerolls?` <i>(tie re-rolled)</i>`:''}` : 'Rolling\u2026'}</div>
+      <div class="dice-result">${landed ? `<span class="dot" style="--pc:${PCOLORS[first]}"></span><b style="color:${PCOLORS[first]}">${esc(G.players[first].name)}</b> goes first${roll.rerolls?` <i>(tie re-rolled)</i>`:''}` : 'Rolling for who goes first…'}</div>
+      <div class="rs-tap">Tap to continue</div>
     </div>
   </div>`;
 }
@@ -2560,7 +2605,7 @@ function diceHTML(){
    where everyone stands, then what's about to happen. It moves on by itself,
    or on a tap. */
 const ROUND_MS = Math.max(PAUSE, 60);          // one second; a tap skips it
-const GAME_END_MS = Math.max(PAUSE*2.4, 60);   // long enough to read who fires
+const GAME_END_MS = Math.max(PAUSE*2.5, 60);   // 2.5 seconds: long enough to read who fires
 function showRoundScreen(next, info, ms){
   G.hold = true;
   if(fxIdleIn()){ whenFxIdle(()=>showRoundScreen(next, info, ms)); render(); return; }
@@ -2750,7 +2795,7 @@ function cmdCheck(cmd){
   if(!cmd || typeof cmd.t!=='string') return 'malformed';
   const p = G.players[cmd.seat];
   if(!p) return 'seat';
-  if(cmd.t==='sandbox') return (G.sandbox && !G.online) ? '' : 'nosandbox';
+  if(cmd.t==='sandbox') return G.sandbox ? '' : 'nosandbox';
   if(cmd.t==='choose') return !G.choice ? 'nochoice' : chooserOf(G.choice)===cmd.seat ? '' : 'notyours';
   if(cmd.t==='standin') return (G.online && cmd.seat===0 && G.players[cmd.target] && cmd.target!==0) ? '' : 'notyours';
   if(G.choice) return 'choice';
@@ -2867,8 +2912,29 @@ function applyChoice(cmd){
     case 'pickmode':
       if(!ch.live.includes(cmd.i)) return false;
       togglePickMode(cmd.i); return true;
+    case 'pickslot':
+      if(!Number.isInteger(cmd.i) || !ch.options[cmd.i]) return false;
+      resolvePickSlot(cmd.i); return true;
+    case 'optional':
+      if(cmd.i!==0 && cmd.i!==1) return false;
+      resolveOptional(cmd.i===1); return true;
   }
   return false;
+}
+/** The answer to "You may …": use it (it runs now, from the queue), or skip
+    it — which counts as not working, so an "in order to" after it stops. */
+function resolveOptional(use){
+  const ch = G.choice;
+  G.choice = null;
+  if(!use){
+    const item = G.fxQueue && G.fxQueue[0];
+    if(item && item.f===ch.f) G.fxQueue.shift();
+    G.fxGateNext = !!ch.f.then;
+    G.fxLastSuccess = false;
+    const src = anyCardByUid(ch.ctx.uid);
+    say(`${G.players[ch.owner].name} skips${src?' '+src.name+'’s':''} “${lc(verbPhrase(ch.f, true))}”.`, ch.owner);
+  }
+  continueAfter('ok');
 }
 
 function applySandbox(cmd){
@@ -3254,6 +3320,7 @@ function processQueue(){
     if(item.restore){ G.fxGateNext = item.restore.gate; G.fxLastSuccess = item.restore.last; continue; }
     const {f, ctx} = item;
     if(item.reset) G.fxGateNext = false;
+    const gateBefore = G.fxGateNext;
     if(G.fxGateNext && !G.fxLastSuccess){
       G.fxGateNext = !!f.then;
       G.fxLastSuccess = false;
@@ -3264,6 +3331,15 @@ function processQueue(){
       say(`“${verbPhrase(f, true)}” doesn’t fire — ${condWhyNot(f.if, ctx)}.`, ctx.owner);
       G.fxLastSuccess = false;
       continue;
+    }
+    /* "You may …": a person is asked first; a bot always uses it. */
+    if(f.optional && !item.asked && G.players[ctx.owner] && !isBot(ctx.owner)){
+      item.asked = true;
+      G.fxGateNext = gateBefore;               // asked again from the same place when they answer
+      G.fxQueue.unshift(item);
+      G.choice = {kind:'optional', owner:ctx.owner, f, ctx};
+      render();
+      return;
     }
     let r;
     if(item.fixedUid){
@@ -3840,15 +3916,32 @@ function summonAt(f, ctx, sideIdx){
   if(!options.length){ say('No room to summon there.', ctx.owner); return fail(); }
   if(f.from==='grave' && !gravePool(f.pick, ctx, f).length) return fail();
   if(f.from==='prev' && !thatCardInHand(ctx)) return fail();
-  if(f.at==='choice' && options.length>1 && !isBot(ctx.owner)){
-    G.choice = {kind:'pickplanet', purpose:'summon', owner:ctx.owner, options, f, ctx, side:sideIdx};
-    return 'pause';
+  /* A person picks the slot itself, straight on the board: only open slots
+     it may go to light up. Bots, random planets and a single open slot don't ask. */
+  if(f.at!=='random' && !isBot(ctx.owner)){
+    const slots = [];
+    options.forEach(pi=>G.planets[pi].board[sideIdx].forEach((c,si)=>{ if(!c) slots.push([pi,si]); }));
+    if(slots.length>1){
+      G.choice = {kind:'pickslot', purpose:'summon', owner:ctx.owner, side:sideIdx, options:slots, f, ctx};
+      return 'pause';
+    }
+    if(slots.length===1) return summonInto(f, ctx, sideIdx, slots[0][0], slots[0][1]);
   }
   return summonInto(f, ctx, sideIdx, f.at==='random' ? pick(options) : options[0]);
 }
+function resolvePickSlot(i){
+  const ch = G.choice;
+  if(!ch || ch.kind!=='pickslot' || !ch.options[i]) return;
+  G.choice = null;
+  continueAfter(summonInto(ch.f, ch.ctx, ch.side, ch.options[i][0], ch.options[i][1]));
+}
+/** What's being summoned, for the banner: a token's name, or where it comes from. */
+function summonWhat(f){
+  return f.from==='grave' ? 'a card from the graveyard' : f.from==='prev' ? 'that card' : tokName(f.tok);
+}
 
-function summonInto(f, ctx, sideIdx, planetIdx){
-  const place = {side:sideIdx, planet:planetIdx};
+function summonInto(f, ctx, sideIdx, planetIdx, slotIdx){
+  const place = {side:sideIdx, planet:planetIdx, slot:slotIdx};
   if(f.from==='grave') return graveTake(f, ctx, place);
   if(f.from==='prev'){
     /* "That card": the card the effect before touched, if it's in a hand now
@@ -3884,7 +3977,7 @@ function thatCardInHand(ctx){
     and queue its own on-reveal ability under its new owner. */
 function placeSummoned(card, ctx, place){
   const row = G.planets[place.planet].board[place.side];
-  const free = row.indexOf(null);
+  const free = (place.slot!=null && row[place.slot]===null) ? place.slot : row.indexOf(null);
   if(free<0) return null;
   card.owner = place.side;
   card.faceUp = true;
@@ -4222,7 +4315,7 @@ function fxVanish(card){
   if(card) emit('vanish', {uid:card.uid, owner:card.owner});
   if(!animOn() || !card) return;
   const el = cardEl(card.uid);
-  if(!el) return;
+  if(!el){ if(card.name) fxRevealVanish(card); return; }
   const r = el.getBoundingClientRect();
   if(!r.width) return;
   const ghost = document.createElement('div');
@@ -4245,6 +4338,38 @@ function fxVanish(card){
   fxBusyFor(FX_MS.vanish);
   setTimeout(()=>ghost.remove(), FX_MS.vanish + 420);
 }
+/** A card leaving a hand that isn't on screen (an opponent's discard): it
+    turns up face up near the top, long enough to read, then crumbles the same
+    way. Anything that comes next waits for it. */
+const REVEAL_HOLD = 650;
+function fxRevealVanish(card){
+  const ghost = document.createElement('div');
+  ghost.className = 'fx-ghost fx-reveal';
+  const owner = G && G.players[card.owner];
+  ghost.innerHTML = cardHTML(card, false, false, true) +
+    (owner ? `<div class="fx-cap" style="--pc:${PCOLORS[card.owner]}"><span class="dot"></span>${esc(owner.name)} discards</div>` : '');
+  const copy = ghost.firstElementChild;
+  copy.classList.remove('sel','unaffordable');
+  copy.removeAttribute('data-act');
+  fxLayer().appendChild(ghost);
+  fxBusyFor(REVEAL_HOLD + FX_MS.vanish + 120);
+  setTimeout(()=>{
+    copy.classList.add('fx-vanish');
+    copy.style.setProperty('--ms', FX_MS.vanish+'ms');
+    const pc = PCOLORS[card.owner] || '#fff';
+    for(let i=0;i<18;i++){
+      const y = Math.random(), x = Math.random();
+      const dot = document.createElement('i');
+      dot.className = 'fx-dust';
+      dot.style.cssText = `left:${x*100}%;top:${y*100}%;--dx:${(Math.random()*36-10).toFixed(0)}px;--dy:${(-14-Math.random()*26).toFixed(0)}px;`+
+                          `animation-delay:${Math.round(y*FX_MS.vanish*0.7)}ms;--fxc:${pc}`;
+      ghost.appendChild(dot);
+    }
+    const cap = ghost.querySelector('.fx-cap'); if(cap) cap.classList.add('out');
+  }, REVEAL_HOLD);
+  setTimeout(()=>ghost.remove(), REVEAL_HOLD + FX_MS.vanish + 420);
+}
+
 /** A card leaving the hand you're looking at leaves its space behind until
     it has finished crumbling; only then do the others close up. */
 function fxHole(card, p, i){
@@ -4422,7 +4547,7 @@ function render(){
     case 'game':   html = (G && G.over && !UI.review) ? viewResult() : viewBoard(); break;
     case 'studio': html = viewStudio(); break;
     case 'decks':  html = viewDecks(); break;
-    case 'sprites':html = viewSprites(); break;
+    case 'sprites':studioTab = 'art'; UI.screen = 'studio'; html = viewStudio(); break;   // old link: Art & data is a Studio tab now
     case 'rules':  html = viewRules(); break;
     case 'online': html = viewOnline(); break;
   }
@@ -4480,12 +4605,9 @@ function viewTitle(){
       <p class="tagline">Six rounds. Five worlds. Hold the most ground when the last card turns over.</p>
       <div class="title-actions">
         ${inRoom() ? `<button class="btn primary" data-on="backtoroom">Back to room ${esc(ON.code)}<span class="k">${G && (G.online||G.isView) ? 'game in progress' : 'lobby'}</span></button>` : ''}
-        <button class="btn ${inRoom()?'':'primary'}" data-act="newgame" data-v="0">Start a game<span class="k">2\u20134 players, one device</span></button>
-        <button class="btn" data-on="open">Play online<span class="k">each on their own device</span></button>
-        <button class="btn" data-act="newgame" data-v="1">Sandbox<span class="k">test anything</span></button>
-        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards &amp; planets</span></button>
+        <button class="btn ${inRoom()?'':'primary'}" data-on="open">Play<span class="k">host, join, or on this device</span></button>
+        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, art &amp; data</span></button>
         <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
-        <button class="btn" data-act="go" data-screen="sprites">Art &amp; data<span class="k">sprites, import, export</span></button>
         <button class="btn" data-act="go" data-screen="rules">How it plays</button>
       </div>
     </div>
@@ -4796,6 +4918,15 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
   const shuffling = isMine && !!sel && !!selAt && sel.faceUp && rearranging();
   const dest = shuffling ? (selAt.planetIdx===pi ? (slotMet(pi, si, sel, playerIdx) ? 'dest match' : 'dest plain') : 'blocked') : '';
 
+  /* Summoning: the open slots it may go to glow and can be tapped; nothing else can. */
+  if(!card && boardPicking() && G.choice.kind==='pickslot'){
+    const k = playerIdx===G.choice.side ? G.choice.options.findIndex(([p,q])=>p===pi && q===si) : -1;
+    const tokDef = G.choice.f.tok && !G.choice.f.from ? defById(G.choice.f.tok) : null;
+    const met0 = k>=0 && tokDef ? slotMet(pi, si, previewInstance(tokDef, playerIdx), playerIdx) : false;
+    return k>=0
+      ? `<button class="slot empty summon-target ${met0?'match':''}" data-act="pickslot" data-i="${k}" style="--fxc:${PCOLORS[G.choice.owner]}" aria-label="Summon here: ${esc(G.planets[pi].name)}, slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}"><span class="slot-mark">${met0?'\u2713':'+'}</span></button>`
+      : `<button class="slot empty" disabled aria-label="Slot ${si+1}"><span class="slot-mark"></span></button>`;
+  }
   /* Empty */
   if(!card){
     const open = isMine && (placing() || (rearranging() && selFits));
@@ -4809,7 +4940,7 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
   }
 
   /* Picking a target on the board itself: what can be picked glows, everything else greys. */
-  if(boardPicking() && card.faceUp){
+  if(boardPicking() && G.choice.kind==='pickcard' && card.faceUp){
     const ok = G.choice.pool.some(o=>o.card.uid===card.uid);
     const met0 = condMet(slot.cond, card);
     return `<button class="slot filled ${ok?'pickable':'unpickable'}" ${ok?`data-act="targetcard" data-uid="${card.uid}" aria-label="Choose ${esc(card.name)}"`:''}
@@ -5018,16 +5149,19 @@ const VERB_CHOICE_LABEL = { givePower:'give Power to', destroy:'destroy', recall
     person choosing is the one looking at it; otherwise it's a sheet. */
 function boardPicking(){
   const ch = G && G.choice;
-  return !!(ch && ch.kind==='pickcard' && (ch.purpose==='board' || ch.purpose==='swap')
+  return !!(ch && ((ch.kind==='pickcard' && (ch.purpose==='board' || ch.purpose==='swap')) || ch.kind==='pickslot')
     && !isBot(ch.owner) && ch.owner===viewerIdx() && UI.screen==='game' && UI.choicePeek!==ch);
 }
 function pickBannerHTML(){
   const ch = G.choice;
-  const what = ch.purpose==='swap' ? `Choose a card to swap ${esc(ch.mover.card.name)} with`
+  const slot = ch.kind==='pickslot';
+  const what = slot ? `Choose a slot to summon ${esc(summonWhat(ch.f))}${ch.side!==ch.owner?' for '+esc(G.players[ch.side].name):''}`
+             : ch.purpose==='swap' ? `Choose a card to swap ${esc(ch.mover.card.name)} with`
              : `Choose a card to ${VERB_CHOICE_LABEL[ch.verb]||'target'}`;
-  const src = ch.ctx && (findCardByUid(ch.ctx.uid) || null);
+  const src = ch.ctx && (anyCardByUid(ch.ctx.uid) || null);
+  const n = slot ? ch.options.length : ch.pool.length;
   return `<div class="pick-banner" style="--pc:${PCOLORS[ch.owner]}" role="status">
-    <div><b>${what}</b><span>${src?esc(src.name)+' \u00B7 ':''}tap one of the ${ch.pool.length} glowing cards</span></div>
+    <div><b>${what}</b><span>${src?esc(src.name)+' \u00B7 ':''}tap one of the ${n} glowing ${slot?'slots':'cards'}</span></div>
     ${choiceTimerHTML()}
   </div>${choiceSideHTML()}`;
 }
@@ -5116,6 +5250,28 @@ function choiceSheetHTML(){
         return `<button class="btn mode-opt${on?' on':''}" data-act="pickmode" data-i="${i}"${live?'':' disabled'}>
           <span class="mode-tick">${on?'✓':''}</span><span>${esc(capFirst(verbPhrase(o)))}</span></button>`;
       }).join('')}</div>
+    </div>`;
+  }
+  if(ch.kind==='pickslot'){
+    return `<div class="scrim"></div><div class="sheet choice">${choiceSrcHTML(ch)}
+      <div class="sheet-head"><h3>Summon ${esc(summonWhat(ch.f))} where?</h3>${sandboxBtn()}</div>
+      <div class="stack" style="padding:6px 0">${ch.options.map(([pi,si],k)=>{
+        const pl = G.planets[pi], sl = pl.slots[si];
+        return `<button class="btn planet-pick" data-act="pickslot" data-i="${k}">
+          <span class="orb" style="--po:${pl.hue};width:26px;height:26px;font-size:13px">${artHTML(pl.art,pl.name)}</span>
+          ${esc(pl.name)} \u00B7 slot ${si+1}<span class="muted tiny" style="margin-left:auto">${esc(condText(sl.cond))} \u2192 ${esc(rewText(sl.rew))}</span></button>`;
+      }).join('')}</div>
+    </div>`;
+  }
+  if(ch.kind==='optional'){
+    return `<div class="scrim"></div><div class="sheet choice">${choiceSrcHTML(ch)}
+      <div class="sheet-head"><h3>Use this effect?</h3>${sandboxBtn()}</div>
+      <p class="opt-say">${esc(capFirst(verbPhrase(ch.f, true)))}.</p>
+      <div class="row opt-row">
+        <button class="btn primary" data-act="pickoptional" data-i="1">Use it</button>
+        <button class="btn" data-act="pickoptional" data-i="0">Skip</button>
+      </div>
+      <p class="tiny muted" style="margin:8px 0 0">${ch.f.then ? 'Skipping it also skips what it would lead to.' : 'It\u2019s optional: the rest of the ability goes ahead either way.'}</p>
     </div>`;
   }
   if(ch.kind==='pickplayer'){
@@ -5339,6 +5495,7 @@ const GLOSSARY = {
   creator:['The card that created this','The card whose Create or Summon made this token, if it\u2019s still on a planet.'],
   thatCard:['That card','The card the effect just before this one acted on. Several cards\u2019 values add up.'],
   inOrderTo:['In order to','The second part only happens if the first actually did something.'],
+  optional:['You may \u2026','Optional: you\u2019re asked first and can skip it. Skipping counts as not doing it, so anything it leads to is skipped too.'],
   cond:['If \u2026','Checked as the effect comes up; if it isn\u2019t true, the effect is skipped. A value read off an enemy card fails when there is none.'],
   only:['Only cards with \u2026','A filter: the effect can only pick cards that pass it.'],
   played:['Played this turn','Turned over (or summoned) during the current player\u2019s reveal turn.'],
@@ -5357,6 +5514,7 @@ function glossaryFor(fx){
     if(f.t==='yoursAll' || f.t==='creator') add(f.t);
     if(/^prev/.test(f.nFrom||'') || (f.if && /^prev/.test(f.if.src+' '+(f.if.valFrom||''))) || f.from==='prev') add('thatCard');
     if(f.then) add('inOrderTo');
+    if(f.optional) add('optional');
     if(f.if) add('cond');
     if(f.only) add(f.only.stat==='playedTurn' ? 'played' : 'only');
     if(whenOf(f)==='activate') add('activate');
@@ -5619,12 +5777,13 @@ function viewRules(){
 let studioTab = 'cards';
 
 function viewStudio(){
-  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['import','Import & export']];
+  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['import','Import & export'],['art','Art & data']];
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
     `<button class="chip ${studioTab===k?'on':''}" data-act="tab" data-v="${k}">${l}${k==='cards'&&flagged?` <span class="flagdot">${flagged}</span>`:''}</button>`).join('')}</div>`;
   const body = studioTab==='planets' ? planetStudio()
              : studioTab==='import'  ? importStudio()
+             : studioTab==='art'     ? spritesBody()
              : cardStudio(studioTab==='tokens');
   return `${topbar('Studio')}<div class="page stack">${bar}${body}</div>`;
 }
@@ -5903,6 +6062,9 @@ function effectRowHTML(f, i, count, nested){
       <button class="btn sm" data-act="addopt" data-i="${i}">Add an option</button></div>`;
   }
 
+  const optBlock = whenOf(f)==='activate' ? '' : `
+    <label class="field check"><input type="checkbox" data-fx="${i}" data-key="optional" ${f.optional?'checked':''}>
+      <span>Optional \u2014 ask first, with a Skip button</span></label>`;
   const thenBlock = !nested && i<count-1 ? `
     <label class="field check"><input type="checkbox" data-fx="${i}" data-key="then" ${f.then?'checked':''}>
       <span>→ only if this works, do the next effect</span></label>` : '';
@@ -5915,6 +6077,7 @@ function effectRowHTML(f, i, count, nested){
     ${actBlockHTML}
     ${gateFields(f, i)}
     ${optsBlock}
+    ${optBlock}
     ${thenBlock}
   </div>`;
 }
@@ -6183,7 +6346,8 @@ function viewDecks(){
 
 /* --- ART & DATA ------------------------------------------------ */
 
-function viewSprites(){
+function viewSprites(){ studioTab = 'art'; return viewStudio(); }
+function spritesBody(){
   const rows = LIB.cards.concat(LIB.tokens).map(cd=>`
     <div class="list-item">
       <span class="thumb">${artHTML(cd.art,cd.name)}</span>
@@ -6198,8 +6362,8 @@ function viewSprites(){
       <label class="btn sm">Upload<input type="file" accept="image/*" data-up="byplanet" data-id="${p.id}" hidden></label>
     </div>`).join('');
 
-  return `${topbar('Art &amp; data')}<div class="page stack">
-    <p class="callout">Sprites are stored inside this page's own browser storage, so they travel with the artifact for you but not for anyone else. Square images read best: they are scaled to 256&nbsp;px and re-encoded on upload.</p>
+  return `<div class="stack">
+    <p class="callout">Sprites are kept in this browser's storage, with the rest of your library. To give everyone the same art, download a backup below and put it on the site as <span class="kbd">game/library.json</span>. Square images read best: they are scaled to 256&nbsp;px and re-encoded on upload.</p>
 
     <div class="section-head"><h3>Cards</h3><p>tap Upload to replace the emoji</p></div>
     <div class="list">${rows}</div>
@@ -6621,6 +6785,8 @@ document.addEventListener('click', e=>{
     case 'pickplayer': dispatch({t:'choose', seat:uiSeat(), i:+t.dataset.i}); break;
     case 'movedest': dispatch({t:'choose', seat:uiSeat(), i:+t.dataset.i}); break;
     case 'pickmode': dispatch({t:'choose', seat:uiSeat(), i:+t.dataset.i}); break;
+    case 'pickoptional': dispatch({t:'choose', seat:uiSeat(), i:+t.dataset.i}); break;
+    case 'pickslot': dispatch({t:'choose', seat:uiSeat(), i:+t.dataset.i}); break;
     case 'sbenergy': dispatch({t:'sandbox', seat:sbSeat(), op:'energy', i:+t.dataset.i, v:+t.dataset.v}); break;
     case 'sbdraw': dispatch({t:'sandbox', seat:sbSeat(), op:'draw', i:+t.dataset.i}); break;
     case 'sbplayer': UI.sbPlayer = +t.dataset.i; render(); break;
@@ -6628,7 +6794,7 @@ document.addEventListener('click', e=>{
     case 'sbround': dispatch({t:'sandbox', seat:sbSeat(), op:'round', v:+t.dataset.v}); break;
     case 'sbgrave': dispatch({t:'sandbox', seat:sbSeat(), op:'grave'}); break;
     case 'sbreset': UI.sheet = null; dispatch({t:'sandbox', seat:sbSeat(), op:'reset'}); break;
-    case 'newgame': LIB.settings.sandbox = t.dataset.v==='1'; saveSoon(); UI.screen='setup'; UI.sheet=null; render(); break;
+    case 'newgame': if(t.dataset.v!=='local') LIB.settings.sandbox = t.dataset.v==='1'; saveSoon(); UI.screen='setup'; UI.sheet=null; render(); break;
     case 'targetcard': dispatch({t:'choose', seat:uiSeat(), uid:t.dataset.uid}); break;
     case 'peek': UI.peekLink = UI.sheet==='peek'; inspectCard(t.dataset.uid); break;
     case 'ungate': UI.gate=false; afterStateChange(); break;
@@ -6859,6 +7025,7 @@ function onEdit(e, isChange){
       saveSoon(); if(isChange) render(); return;
     }
     if(k==='then') f.then = el.checked;
+    else if(k==='optional'){ if(el.checked) f.optional = true; else delete f.optional; }
     else if(k==='mode'){
       if(val==='single'){ f.target = f.target || {player:'self', here:false, rule:'choice'}; delete f.t; }
       else if(val==='mine'){ f.t = 'yoursAll'; delete f.target; }
@@ -7229,7 +7396,7 @@ function defaultLobby(n){
   const decks = LIB.decks;
   return { seats: Array.from({length:n}, (_,i)=>({deck:(LIB.settings.deckOf[i] && decks.some(d=>d.id===LIB.settings.deckOf[i])) ? LIB.settings.deckOf[i] : decks[Math.min(i, decks.length-1)].id})),
            planets: LIB.settings.planets||5, rounds: LIB.settings.rounds||6,
-           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30 };
+           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false };
 }
 function lobbyPayload(){
   return {t:'lobby', lobby:ON.lobby, decks:LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})), playing: !!(G && G.online && !G.over)};
@@ -7251,7 +7418,7 @@ function hostReceive(from, d){
   }
   if(d.t==='cmd' && d.cmd && typeof d.cmd==='object' && G && G.online){
     const cmd = Object.assign({}, d.cmd, {seat:from});            // a guest only ever acts for its own seat
-    if(cmd.t==='sandbox' || cmd.t==='standin') return;
+    if(cmd.t==='standin' || (cmd.t==='sandbox' && !G.sandbox)) return;
     const r = dispatch(cmd);
     if(!r.ok) relay({data:{t:'nope', why:r.why, c:cmd.t}}, from);
     render();
@@ -7267,7 +7434,7 @@ function startOnlineGame(){
   NET.seat = 0; NET.send = null;
   UI.screen = 'game'; UI.sheet = null;
   newGame({online:true, players:n, kinds, names, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
-           sandbox:false, hide:false, placement:'simultaneous'});
+           sandbox:!!L.sandbox, hide:false, placement:'simultaneous'});
   hostBroadcast();
 }
 /** Back to the lobby after a game, everyone together. */
@@ -7416,7 +7583,7 @@ function guestView(d){
 
   /* leaving and sliding play from where the card was: before the new view is drawn */
   if(onBoard) evs.forEach(e=>{
-    if(e.k==='vanish' && e.uid) fxVanish({uid:e.uid, owner:e.owner});
+    if(e.k==='vanish' && e.uid) fxVanish((v.grave||[]).find(c=>c.uid===e.uid) || {uid:e.uid, owner:e.owner});
     else if(e.k==='slide' && e.uid) fxSlideStart({uid:e.uid});
   });
 
@@ -7507,17 +7674,24 @@ function netTimerTick(){
 
 /* --- screens ----------------------------------------------------------------- */
 
+/** Play on this device: the local setup screen (players, bots, decks, sandbox). */
+const localCardHTML = () => `<div class="card-panel">
+      <h3 class="op-h">On this device</h3>
+      <p class="tiny muted" style="margin:0 0 10px">2\u20134 players passing one phone or tablet, or you against bots. Sandbox mode is a switch in the setup.</p>
+      <button class="btn primary wide" data-act="newgame" data-v="local">Set up a game on this device</button>
+    </div>`;
 function viewOnline(){
-  if(!onlineAvailable()) return `${topbar('Play online')}
-    <div class="page stack"><div class="callout">Online play works on the website copy of Territory, not a file opened from your computer. Deploy it (see DEPLOY.md) and open the address it gives you.</div></div>`;
+  if(!onlineAvailable()) return `${topbar('Play')}
+    <div class="page stack online-page">${localCardHTML()}<div class="callout">Hosting and joining online work on the website copy of Territory, not a file opened from your computer. Deploy it (see DEPLOY.md) and open the address it gives you.</div></div>`;
   if(inRoom() && ON.seat!=null && ON.lobby) return viewLobby();
-  if(inRoom()) return `${topbar('Play online')}<div class="page stack"><div class="net-wait"><span class="spinner"></span>${ON.status==='retry'?'Reconnecting to':'Connecting to'} room <b>${esc(ON.code||'')}</b>…</div>
+  if(inRoom()) return `${topbar('Play')}<div class="page stack"><div class="net-wait"><span class="spinner"></span>${ON.status==='retry'?'Reconnecting to':'Connecting to'} room <b>${esc(ON.code||'')}</b>…</div>
     <button class="btn ghost" data-on="leave">Cancel</button></div>`;
   const saved = savedRoom();
   const name = esc(LIB.settings.onlineName||'');
-  return `${topbar('Play online')}
+  return `${topbar('Play')}
   <div class="page stack online-page">
     ${ON.error?`<div class="callout">${esc(ON.error)}</div>`:''}
+    <h3 class="op-sect">Online</h3>
     <label class="field"><span>Your name</span><input data-on-input="name" maxlength="24" placeholder="What the others will see" value="${name}" autocomplete="nickname"></label>
     ${saved ? `<div class="card-panel online-resume">
       <div class="row"><b>Room ${esc(saved.code)}</b><span class="muted tiny" style="margin-left:auto">${saved.role==='host'?'you were hosting':'you were '+esc(PNAMES[saved.seat]||'a player')}</span></div>
@@ -7542,7 +7716,8 @@ function viewOnline(){
         <button class="btn primary" data-on="join" style="flex:1">Join</button>
       </div>
     </div>
-    <p class="tiny muted">Everyone places at once on their own device, then cards turn over in order. Your deck comes from the host’s library.</p>
+    <p class="tiny muted" style="margin-top:-4px">Online, everyone places at once on their own device, then cards turn over in order. Decks come from the host\u2019s library.</p>
+    ${localCardHTML()}
   </div>`;
 }
 
@@ -7572,7 +7747,11 @@ function viewLobby(){
       <label class="field"><span>Rounds</span><select data-on-input="rounds">${opts([4,5,6,7,8], L.rounds)}</select></label>
       <label class="field"><span>Turn timer</span><select data-on-input="turnTimer">${opts([0,30,45,60,90,120], L.turnTimer, v=>v?fmtClock(v*1000):'Off')}</select></label>
       ${L.turnTimer ? `<label class="field"><span>Ability choice timer</span><select data-on-input="choiceTimer">${opts(CHOICE_PRESETS.map(x=>x[0]), L.choiceTimer, v=>fmtClock(v*1000))}</select></label>` : '<div></div>'}
-    </div>` : `<p class="tiny muted" style="margin:0">${L.planets} planets · ${L.rounds} rounds · ${L.turnTimer ? fmtClock(L.turnTimer*1000)+' turns, '+fmtClock(L.choiceTimer*1000)+' choices' : 'no turn timer'}</p>`;
+    </div>
+    <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
+      <input type="checkbox" data-on-input="sandbox" ${L.sandbox?'checked':''} style="width:auto">
+      <span class="tiny"><b>Sandbox mode</b> \u2014 everyone gets the \u{1F9EA} bench: add Energy, put any card in a hand, change the round, reset the board.</span>
+    </label>` : `<p class="tiny muted" style="margin:0">${L.planets} planets · ${L.rounds} rounds · ${L.turnTimer ? fmtClock(L.turnTimer*1000)+' turns, '+fmtClock(L.choiceTimer*1000)+' choices' : 'no turn timer'}${L.sandbox?' \u00B7 sandbox mode':''}</p>`;
   return `${topbar('Room '+ON.code)}
   <div class="page stack online-page">
     ${netStatusHTML()}
@@ -7655,6 +7834,7 @@ document.addEventListener('change', e=>{
     else { ON.lobby.seats[i].deck = el.value; relay({data:{t:'deck', id:el.value}}); }
     render(); return;
   }
+  if(isHost() && ON.lobby && k==='sandbox'){ ON.lobby.sandbox = el.checked; hostSync(); render(); return; }
   if(isHost() && ON.lobby && ['planets','rounds','turnTimer','choiceTimer'].includes(k)){ ON.lobby[k] = +el.value; hostSync(); render(); }
 });
 
