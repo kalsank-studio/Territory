@@ -13,6 +13,7 @@
      7. Rendering (title, setup, board, results, studio, decks, sprites)
      8. Event routing
      9. Online (host runs the game, guests send commands and draw views)
+    10. Profile (your name, record and match history on this device)
    =================================================================== */
 
 /* ------------------------------------------------------------------
@@ -180,6 +181,7 @@ const WHEN = {
   destroyed: {label:'When destroyed',                  text:'When this card is destroyed'},
   graveIn:   {label:'When a card goes to the graveyard', text:'Whenever a card goes to the graveyard'},
   graveOut:  {label:'When a card leaves the graveyard',  text:'Whenever a card leaves the graveyard'},
+  youDraw:   {label:'When you draw on your turn',        text:'Whenever you draw a card on your turn'},
   roundStart:{label:'At the start of each round',        text:'At the start of each round'},
   roundEnd:  {label:'At the end of each round',          text:'At the end of each round'},
   nextRound: {label:'At the start of the next round',    text:'At the start of the next round'},
@@ -849,6 +851,7 @@ const WHEN_WORDS = [
   ['destroyed', /^when(?:ever)? this card is destroyed\s*[:,–—-]\s*/i],
   ['graveIn',   /^when(?:ever)? (?:a|any) card (?:goes|is put|is sent|enters?)(?: in)?(?: to| into)? the graveyard\s*[:,–—-]\s*/i],
   ['graveOut',  /^when(?:ever)? (?:a|any) card leaves the graveyard\s*[:,\u2013\u2014-]\s*/i],
+  ['youDraw',   /^when(?:ever)? you draw (?:a card)?(?:\s*(?:on|during) your turn)?\s*[:,\u2013\u2014-]\s*/i],
   ['roundStart',/^at the (?:start|beginning) of (?:each|every) round\s*[:,\u2013\u2014-]?\s*/i],
   ['roundEnd',  /^at the end of (?:each|every) round\s*[:,\u2013\u2014-]?\s*/i],
   ['nextRound', /^at the (?:start|beginning) of (?:the )?next round\s*[:,\u2013\u2014-]?\s*/i],
@@ -1753,6 +1756,9 @@ function placementModeFor(s, kinds){
   return (s.placement==='simultaneous' && humans<=1) ? 'simultaneous' : 'turns';
 }
 
+/** The first human seat at a local table: the one the profile name goes to. */
+function firstHumanOf(s, n){ for(let i=0;i<n;i++) if((s.kinds[i]||'human')==='human') return i; return -1; }
+
 /** Start a game from the setup screen. `opts` can override the seed and the
     seats (a server or a test hands these in); otherwise LIB.settings decides. */
 function newGame(opts){
@@ -1770,7 +1776,7 @@ function newGame(opts){
     const deck = deckById(s.deckOf[i] || LIB.decks[0].id);
     const cards = (deck.cards||[]).map(id=>defById(id)).filter(Boolean).map(d=>instance(d,i));
     players.push({
-      idx:i, name:(s.names && s.names[i]) || PNAMES[i], kind:(s.kinds[i]||'human'),
+      idx:i, name:(s.names && s.names[i]) || (!s.names && i===firstHumanOf(s, n) && profileName()) || PNAMES[i], kind:(s.kinds[i]||'human'),
       deck:shuffle(cards), hand:[], energy:0, planned:0, placed:[]
     });
   }
@@ -1796,6 +1802,8 @@ function newGame(opts){
     seed, rng, botRng, uids,              // the streams above; same seed + same commands = same game
     simul: placementModeFor(s, players.map(p=>p.kind))==='simultaneous',
     online: !!s.online,
+    mulligans: s.mulligan!==false,         // one mulligan each, in round 1
+    gameId: Date.now().toString(36) + uiRnd(1e9).toString(36),   // for the match history; not part of the rules
     cmdLog:[],     // every accepted command, in order: what a replay or a server re-applies
     events:[],     // what happened, for the screen to animate: {n, k, …} (see emit)
     eventN:0
@@ -2085,6 +2093,39 @@ function placingSeats(){
   if(G.simul) return G.players.filter(p=>!p.locked).map(p=>p.idx);
   const p = G.players[G.order[G.turn]];
   return p ? [p.idx] : [];
+}
+
+/** One mulligan a game: in round 1, while placing, before a card is down. */
+function canMulligan(p){
+  return !!(p && G.mulligans && G.round===1 && G.phase==='placement' && !G.over && !p.mulled && !p.locked
+    && !p.placed.length && placingSeats().includes(p.idx) && p.kind==='human');
+}
+/** The whole hand goes back, the deck is shuffled, and the same number of
+    cards come out. Nothing triggers: it is the opening hand, dealt again. */
+function mulligan(p){
+  if(!canMulligan(p)) return false;
+  const n = p.hand.length;
+  p.deck = shuffle(p.deck.concat(p.hand));
+  p.hand = [];
+  for(let i=0;i<n;i++){ const c = drawCard(p, true, true); if(c) fxArrive(c, 'draw'); }
+  p.mulled = true;
+  say(`${p.name} takes a mulligan: a new hand of ${p.hand.length}.`, p.idx);
+  emit('mulligan', {seat:p.idx});
+  if(p.idx===localSeat() || p.idx===viewerIdx()){ UI.sel = null; UI.mullAsk = false; }
+  return true;
+}
+/** Placing at once: a locked-in player can change their mind while anyone
+    else is still placing. Once the last one locks in, the reveal begins. */
+function canUnlock(p){
+  return !!(p && G.simul && G.phase==='placement' && !G.over && p.locked && !G.hold
+    && G.players.some(q=>!q.locked) && p.kind==='human');
+}
+function unlockSeat(p){
+  if(!canUnlock(p)) return false;
+  p.locked = false;
+  say(`${p.name} unlocked to change their placement.`, p.idx);
+  emit('unlock', {seat:p.idx});
+  return true;
 }
 
 /** A player is done placing. Taking turns, play passes to the next player;
@@ -2716,6 +2757,7 @@ function finishGame(){
   G.phase = 'over';
   G.result = { rows, won, winner: cands.length===1 ? cands[0] : null, reason };
   say(cands.length===1 ? `${G.players[cands[0]].name} wins the game.` : 'The game ends in a draw.');
+  recordGame();
   UI.gate = false; UI.autoflip = false; UI.review = false;
   UI.reviewSeat = Math.max(0, G.players.findIndex(p=>p.kind==='human'));
   render();
@@ -2761,6 +2803,10 @@ const botsDrive = () => !UI.replaying;
      {t:'endReveal', seat, early?}      end your reveal turn (early: the timer ran out)
      {t:'choose',    seat, uid | i}     answer the open choice (a card by uid, or option i)
      {t:'sandbox',   seat, op, …}       the sandbox bench (never online)
+     {t:'mulligan',  seat}              round 1, before placing anything: shuffle
+                                        the hand into the deck and draw a new one (once)
+     {t:'unlock',    seat}              placing at once: take back your lock-in
+                                        while someone else is still placing
      {t:'standin',   seat, target, on}  online, the host only: a bot plays for a
                                         seat whose player has dropped (on), or
                                         hands it back when they return (off)
@@ -2807,6 +2853,10 @@ function cmdCheck(cmd){
       return placingSeats().includes(cmd.seat) ? '' : 'turn';
     case 'unplace': case 'lock':
       return placingSeats().includes(cmd.seat) ? '' : 'turn';
+    case 'mulligan':
+      return canMulligan(p) ? '' : 'nomulligan';
+    case 'unlock':
+      return canUnlock(p) ? '' : 'nounlock';
     case 'move':
       if(!slotOk) return 'slot';
       if(G.phase==='placement') return placingSeats().includes(cmd.seat) ? '' : 'turn';
@@ -2862,6 +2912,8 @@ function applyCommand(cmd){
       return !!at && at.from==='board' && unplaceCard(p, at.planetIdx, at.slotIdx);
     }
     case 'lock':      lockIn(p.idx); return true;
+    case 'mulligan':  return mulligan(p);
+    case 'unlock':    return unlockSeat(p);
     case 'flip':
       if(!faceDownOf(p).some(f=>f.card.uid===cmd.uid)) return false;
       flipCard(cmd.uid); return true;
@@ -3047,7 +3099,7 @@ function emit(k, data){
     give the same string. Used to check a replay matches the original. */
 function stateDigest(g){
   g = g || G;
-  const skip = ['log','events','eventN','botRng','cmdLog','epoch','hold','flipping','dice'];
+  const skip = ['log','events','eventN','botRng','cmdLog','epoch','hold','flipping','dice','gameId'];
   return JSON.stringify(g, function(k, val){ return (this===g && skip.includes(k)) ? undefined : val; });
 }
 
@@ -3398,6 +3450,9 @@ function fireTrigger(card, when, ctx){
   const items = fx.map(f=>({f:migrateFx(f), ctx}));
   items[0].reset = true;
   say(`${card.name}: ${WHEN[when].label.toLowerCase()}.`, ctx.owner);
+  /* the card whose passive just woke lights up, wherever it is drawn */
+  emit('glow', {uid:card.uid, seat:ctx.owner});
+  glowCard(card.uid, PCOLORS[ctx.owner] || PCOLORS[card.owner]);
   (G.trigBuf = G.trigBuf || []).push(...items);
   if(!G.fxQueue){                      // nothing running: open a queue of its own
     G.fxQueue = []; G.fxAfter = G.fxAfter || 'resume';
@@ -3405,6 +3460,16 @@ function fireTrigger(card, when, ctx){
   }
 }
 
+/** "Whenever you draw a card on your turn": a card drawn by an ability (from
+    the deck or out of the graveyard) during its drawer's own reveal turn sets
+    off each of that player's face-up cards that listen for it, once per card
+    drawn. The round's own draw and slot rewards don't count. */
+function drawWatchers(owner){
+  if(!G || G.phase!=='reveal' || G.order[G.revealer]!==owner) return;
+  G.planets.forEach((pl,pi)=>pl.board[owner].forEach((c,si)=>{
+    if(c && c.faceUp) fireTrigger(c, 'youDraw', {owner, planetIdx:pi, slotIdx:si, uid:c.uid});
+  }));
+}
 /** Every face-up card on a planet that watches the graveyard. */
 function graveWatchers(when, card){
   G.planets.forEach((pl,pi)=>pl.board.forEach((row,p)=>row.forEach((c,si)=>{
@@ -3503,7 +3568,7 @@ function applyEffect(f, ctx){
       if(f.from==='grave') return graveTake(f, ctx, null);
       const n = resolveAmount(f, ctx);
       const got = [];
-      for(let i=0;i<n;i++){ const c = drawCard(p, true); if(c) got.push(snap(c)); }
+      for(let i=0;i<n;i++){ const c = drawCard(p, true); if(c){ got.push(snap(c)); drawWatchers(ctx.owner); } }
       say(got.length ? `${p.name} draws ${got.length}.` : `${p.name} has no cards left to draw.`, ctx.owner);
       remember(ctx, got);
       return got.length ? succeed() : fail();
@@ -4012,6 +4077,7 @@ function takeFromGrave(f, ctx, card, place){
   G.players[ctx.owner].hand.push(card);
   say(`${G.players[ctx.owner].name} takes ${card.name} from the graveyard into hand.`, ctx.owner);
   fireTrigger(card, 'drawn', {owner:ctx.owner, planetIdx:null, slotIdx:null, uid:card.uid});
+  if(f.v==='draw') drawWatchers(ctx.owner);
   graveWatchers('graveOut', card);
   return snap(card);
 }
@@ -4550,6 +4616,7 @@ function render(){
     case 'sprites':studioTab = 'art'; UI.screen = 'studio'; html = viewStudio(); break;   // old link: Art & data is a Studio tab now
     case 'rules':  html = viewRules(); break;
     case 'online': html = viewOnline(); break;
+    case 'profile': html = viewProfile(); break;
   }
   $('#app').innerHTML = html;
   $('#overlay').innerHTML = viewOverlays();
@@ -4608,6 +4675,7 @@ function viewTitle(){
         <button class="btn ${inRoom()?'':'primary'}" data-on="open">Play<span class="k">host, join, or on this device</span></button>
         <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, art &amp; data</span></button>
         <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
+        <button class="btn" data-act="go" data-screen="profile">Profile<span class="k">${(()=>{ const st = profileStats(); return st.played ? st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 '+esc(profileName()||'no name yet') : esc(profileName()||'name, record, history'); })()}</span></button>
         <button class="btn" data-act="go" data-screen="rules">How it plays</button>
       </div>
     </div>
@@ -4645,7 +4713,7 @@ function viewSetup(){
     <div class="card-panel">
       <div class="row" style="margin-bottom:10px">
         <span class="dot" style="--pc:${PCOLORS[i]}"></span>
-        <b>${PNAMES[i]}</b>
+        <b>${esc(i===firstHumanOf(s, s.players) && profileName() ? profileName() : PNAMES[i])}</b>
         <div class="spacer" style="flex:1"></div>
         <button class="chip ${s.kinds[i]!=='bot'?'on':''}" data-act="kind" data-i="${i}" data-v="human">Human</button>
         <button class="chip ${s.kinds[i]==='bot'?'on':''}" data-act="kind" data-i="${i}" data-v="bot">Bot</button>
@@ -4683,6 +4751,10 @@ function viewSetup(){
       <div></div>
     </div>
     <p class="tiny muted" style="margin:-4px 0 0">Each human turn gets ${fmtClock(s.turnTimer*1000)}, with a warning at 10 seconds. When it runs out the turn finishes itself: cards placed stay placed and cards still face down are turned over. A pop-up asking you to choose for an ability gets ${fmtClock((s.choiceTimer||30)*1000)} of its own, and the turn clock waits meanwhile; if it runs out the choice is made at random.</p>` : ''}
+    <label class="row" style="gap:8px">
+      <input type="checkbox" data-act="mulligan" ${s.mulligan!==false?'checked':''} style="width:auto">
+      <span class="tiny">One mulligan each: in round 1, before placing, a player may shuffle their hand back and draw a new one</span>
+    </label>
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-act="sandbox" ${s.sandbox?'checked':''} style="width:auto">
       <span class="tiny"><b>Sandbox mode</b> \u2014 a \u{1F9EA} bench in the game to add Energy, put any card in a hand, change the round and reset the board. Hands stay visible.</span>
@@ -4775,16 +4847,19 @@ function viewBoard(){
 
   return `<div class="board ${G.over?'is-review':''} ${UI.transition?'is-holding':''} ${boardPicking()?'is-picking':''}">
     <div class="hud">
-      <div>
-        <div class="round">${G.over?'Game over':'Round '+G.round+' of '+G.rounds}</div>
+      <div class="hud-left">
+      ${G.over ? '' : `<span class="pill energy">\u26A1 <b data-en="${me.idx}">${shownEnergy(me)}</b>${me.planned?` <span class="planned">\u2212${me.planned}</span>`:''}</span>`}
+      </div>
+      <div class="hud-mid">
+        <div class="round">${G.over?'Game over':`Round <b>${G.round}</b> <span>of ${G.rounds}</span>`}</div>
         <div class="phase">${phaseLabel}${G.over?'':' phase'}</div>
       </div>
-      <div class="spacer"></div>
-      ${G.over ? '' : `<span class="pill energy">\u26A1 <b data-en="${me.idx}">${shownEnergy(me)}</b>${me.planned?` <span class="planned">\u2212${me.planned}</span>`:''}</span>`}
+      <div class="hud-right">
       <button class="icon-btn grave-btn" data-act="sheet" data-v="grave" aria-label="Graveyard, ${G.grave.length} cards">\u{1FAA6}${G.grave.length?`<span class="count">${G.grave.length}</span>`:''}</button>
       ${G.sandbox?`<button class="icon-btn sb-btn" data-act="sheet" data-v="sandbox" aria-label="Sandbox tools">\u{1F9EA}</button>`:''}
       <button class="icon-btn" data-act="sheet" data-v="log" aria-label="Game log">\u2261</button>
       <button class="icon-btn" data-act="sheet" data-v="menu" aria-label="Menu">\u22EF</button>
+      </div>
     </div>
 
     <div class="turnbar ${waiting?'waiting':''}">
@@ -4993,6 +5068,16 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
 }
 
 /** The face of a card, sized for a slot. */
+/** The passive ability a card has, if any (a trigger other than on reveal or a tap). */
+function passiveOf(card){
+  const f = (card && card.fx || []).find(x=>{ const w = whenOf(x); return w!=='reveal' && w!=='activate'; });
+  return f ? whenOf(f) : null;
+}
+const PASSIVE_MARK = '\u25C8';      // ◈
+function passiveMarkHTML(card){
+  const w = passiveOf(card);
+  return w ? `<span class="pass-chip" title="Passive: ${esc(WHEN[w].label)}" aria-label="Passive ability: ${esc(WHEN[w].label)}">${PASSIVE_MARK}</span>` : '';
+}
 function miniHTML(card, pc, met, committed, peeking, actState){
   const cls = powerCls(card);
   const a = actState ? actSpec(card) : null;
@@ -5000,12 +5085,13 @@ function miniHTML(card, pc, met, committed, peeking, actState){
      (ready = lit, otherwise dimmed), its cost the number beside it. */
   const chip = a ? `<span class="act-chip ${actState}" title="${esc(actState==='ready'?'Tap to activate':ACT_WHY[actState]||'Activated ability')}">\u2699${a.cost?`<b>${a.cost}</b>`:''}</span>` : '';
   const tk = tickState(card);
-  return `<div class="mini ${met?'met':''} ${committed?'pending':''} ${peeking?'peeking':''}${slidingAttr(card.uid)}${arriveAttr(card.uid)}" style="--pc:${pc}" data-rarity="${rarityOf(card)}" data-uid="${card.uid}">
+  const pass = passiveMarkHTML(card);
+  return `<div class="mini ${met?'met':''} ${committed?'pending':''} ${peeking?'peeking':''} ${pass?'has-passive':''}${slidingAttr(card.uid)}${arriveAttr(card.uid)}" style="--pc:${pc}" data-rarity="${rarityOf(card)}" data-uid="${card.uid}">
     <span class="c">${card.cost}</span><span class="p ${cls}${tk.cls}" data-pw="${card.uid}">${tk.v}</span>
     <div class="art">${artHTML(card.art, card.name)}</div>
     <div class="nm">${esc(card.name)}</div>
     ${committed?'<span class="pinned">held</span>':''}
-    ${chip}
+    ${chip}${pass}
   </div>`;
 }
 
@@ -5082,8 +5168,9 @@ function trayHTML(me, held){
       <span class="spend">\u26A1 <span data-spend>${spend}</span> to spend</span>
       <div style="flex:1"></div>
       ${onBoard?`<button class="btn sm ghost" data-act="tohand">Return to hand</button>`:''}
+      ${!held && canMulligan(me) ? `<button class="btn sm ${UI.mullAsk?'warn':'ghost'}" data-act="mulligan">${UI.mullAsk?'Redraw hand?':'New hand'}</button>` : ''}
       ${held?'':`<button class="btn sm ${me.placed.length?'primary':''}" data-act="endturn">${me.placed.length?'Lock in '+me.placed.length:'Play nothing'}</button>`}
-      ${held && G.simul && me.locked ? `<span class="locked-tag">\u2713 Locked in</span>` : ''}
+      ${held && G.simul && me.locked ? `<span class="locked-tag">\u2713 Locked in</span>${canUnlock(me)?`<button class="btn sm" data-act="unlock">Unlock</button>`:''}` : ''}
     </div>
     <div class="hand" data-drop="hand">${handCardsHTML(me.hand, c=>cardHTML(c, UI.sel===c.uid, !canPlace(me,c)))
       || '<div class="empty-note">Hand empty. Lock in to continue.</div>'}</div>
@@ -5102,6 +5189,7 @@ function cardHTML(card, selected, dim, big){
     <div class="art">${artHTML(card.art, card.name)}</div>
     <div class="nm">${esc(card.name)}</div>
     <div class="tx">${esc(tx)}</div>
+    ${passiveMarkHTML(card)}
   </button>`;
 }
 /* --- RESULTS --------------------------------------------------- */
@@ -5433,6 +5521,7 @@ function viewOverlays(){
     }
   }
 
+  if(UI.sheet==='hist' && UI.screen==='profile') return out + historySheetHTML();
   if(UI.sheet==='log' && G){
     const items = G.log.slice(-160).map(l=> l.rd
       ? `<div class="rd">${esc(l.t)}</div>`
@@ -5473,6 +5562,7 @@ function viewOverlays(){
    in hand, on the board, mid-choice, mid-animation. Below the card: what each
    rules word on it means. */
 const GLOSSARY = {
+  passiveMark:['\u25C8 Passive','This card has an ability that waits for something to happen (see its first words) and fires by itself. The card lights up when it does.'],
   givePower:['Give Power','Adds Power tokens to a card. The bonus moves with the card and is lost if it leaves the board.'],
   burn:['Burn','Takes Power away \u2014 bonus Power first, then base Power, down to 0. A burned card\u2019s Power shows in red.'],
   steal:['Steal','Takes only bonus Power (never base) from a card and gives it to another.'],
@@ -5521,6 +5611,7 @@ function glossaryFor(fx){
     if(f.opts) walk(f.opts);
   });
   walk(fx);
+  if((fx||[]).some(f=>{ const w = whenOf(f); return w!=='reveal' && w!=='activate'; })) add('passiveMark');
   /* passive and timed triggers explain themselves by their own words */
   const whens = [...new Set((fx||[]).map(whenOf).filter(w=>w!=='reveal' && w!=='activate'))];
   return keys.map(k=>GLOSSARY[k]).concat(whens.map(w=>[WHEN[w].label, w==='roundStart'||w==='roundEnd'||w==='nextRound'||w==='gameEnd'
@@ -6718,6 +6809,10 @@ document.addEventListener('click', e=>{
     case 'sheet': UI.sheet = t.dataset.v; render(); break;
     case 'closesheet': UI.sheet=null; UI.peek=null; UI.peekStack=[]; render(); break;
     case 'peekdef': inspectDef(t.dataset.id); break;
+    case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
+    case 'histclear':
+      if(!UI.pfClear){ UI.pfClear = true; render(); setTimeout(()=>{ UI.pfClear = false; if(UI.screen==='profile') render(); }, 3500); break; }
+      UI.pfClear = false; PROFILE.games = []; saveProfile(); toast('Match history cleared.'); render(); break;
     case 'choicepeek': if(G && G.choice){ UI.choicePeek = UI.choicePeek===G.choice ? null : G.choice; UI.sheet = null; UI.peek = null; UI.sel = null; render(); } break;
     case 'peekback': { const back = UI.peekStack && UI.peekStack.pop(); if(back){ UI.peek = back; render(); } break; }
     case 'theme': {
@@ -6768,6 +6863,20 @@ document.addEventListener('click', e=>{
       UI.sel = null; render(); break;
     }
     case 'endturn': if(G && p) dispatch({t:'lock', seat:p.idx}); break;
+    case 'mulligan': {
+      if(!G || !p) break;
+      if(!UI.mullAsk){ UI.mullAsk = true; render(); clearTimeout(UI.mullT); UI.mullT = setTimeout(()=>{ UI.mullAsk = false; render(); }, 3500); break; }
+      UI.mullAsk = false;
+      const r = dispatch({t:'mulligan', seat:p.idx});
+      if(r.ok && !r.sent) toast('New hand dealt. That was your one mulligan.');
+      render(); break;
+    }
+    case 'unlock': {
+      if(!G) break;
+      const me = G.players[viewerIdx()];
+      if(me) dispatch({t:'unlock', seat:me.idx});
+      render(); break;
+    }
 
     /* reveal */
     case 'flip': if(!p) break; UI.justFlipped=null; dispatch({t:'flip', seat:p.idx, uid:t.dataset.uid}); break;
@@ -7091,6 +7200,7 @@ function onEdit(e, isChange){
   if(d.act==='seatdeck'){ LIB.settings.deckOf[+d.i] = el.value; saveSoon(); return; }
   if(d.act==='hide'){ LIB.settings.hide = el.checked; saveSoon(); return; }
   if(d.act==='sandbox'){ LIB.settings.sandbox = el.checked; saveSoon(); render(); return; }
+  if(d.act==='mulligan'){ LIB.settings.mulligan = el.checked; saveSoon(); return; }
   if(d.act==='timerpreset'){
     LIB.settings.turnTimerCustom = el.value==='custom';
     if(el.value!=='custom') LIB.settings.turnTimer = parseInt(el.value,10)||0;
@@ -7245,7 +7355,7 @@ const apiURL = path => location.origin + path;
 function savedRoom(){ try{ return JSON.parse(localStorage.getItem(ONLINE_KEY)||'null'); }catch(e){ return null; } }
 function rememberRoom(){ try{ localStorage.setItem(ONLINE_KEY, JSON.stringify({code:ON.code, token:ON.token, seat:ON.seat, role:ON.role, name:onlineName()})); }catch(e){} }
 function forgetRoom(){ try{ localStorage.removeItem(ONLINE_KEY); localStorage.removeItem(HOSTGAME_KEY); }catch(e){} }
-const onlineName = () => (LIB.settings.onlineName || '').trim().slice(0, 24);
+const onlineName = () => profileName();
 const inRoom = () => !!(ON.code && ON.status!=='idle' && ON.status!=='closed');
 const seatOnline = i => { const s = ON.seats.find(x=>x.seat===i); return !!(s && s.online); };
 const seatName = i => { const s = ON.seats.find(x=>x.seat===i); return (s && s.name) || PNAMES[i]; };
@@ -7396,7 +7506,7 @@ function defaultLobby(n){
   const decks = LIB.decks;
   return { seats: Array.from({length:n}, (_,i)=>({deck:(LIB.settings.deckOf[i] && decks.some(d=>d.id===LIB.settings.deckOf[i])) ? LIB.settings.deckOf[i] : decks[Math.min(i, decks.length-1)].id})),
            planets: LIB.settings.planets||5, rounds: LIB.settings.rounds||6,
-           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false };
+           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false, mulligan: LIB.settings.mulligan!==false };
 }
 function lobbyPayload(){
   return {t:'lobby', lobby:ON.lobby, decks:LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})), playing: !!(G && G.online && !G.over)};
@@ -7434,7 +7544,7 @@ function startOnlineGame(){
   NET.seat = 0; NET.send = null;
   UI.screen = 'game'; UI.sheet = null;
   newGame({online:true, players:n, kinds, names, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
-           sandbox:!!L.sandbox, hide:false, placement:'simultaneous'});
+           sandbox:!!L.sandbox, mulligan:L.mulligan!==false, hide:false, placement:'simultaneous'});
   hostBroadcast();
 }
 /** Back to the lobby after a game, everyone together. */
@@ -7607,12 +7717,14 @@ function guestView(d){
     if(e.k==='arrive' && e.uid) fxArrive({uid:e.uid, owner:e.owner}, e.kind);
     else if(e.k==='energy' && e.seat===G.viewer) fxEnergy(e.seat, e.n, e.from ? {uid:e.from} : null);
     else if(e.k==='flip' && e.uid) flip = e.uid;
+    else if(e.k==='glow' && e.uid) glowCard(e.uid, PCOLORS[e.seat]);
   });
   if(flip){
     UI.flipAnim = flip;
     clearTimeout(ON.flipT);
     ON.flipT = setTimeout(()=>{ if(UI.flipAnim===flip){ UI.flipAnim = null; render(); } }, FLIP_MS);
   }
+  if(G.over) recordGame();             // a guest keeps its own record too
   render();
   if(onBoard) evs.forEach(e=>{
     if(e.k==='beam' && e.to && e.to.length){
@@ -7687,7 +7799,7 @@ function viewOnline(){
   if(inRoom()) return `${topbar('Play')}<div class="page stack"><div class="net-wait"><span class="spinner"></span>${ON.status==='retry'?'Reconnecting to':'Connecting to'} room <b>${esc(ON.code||'')}</b>…</div>
     <button class="btn ghost" data-on="leave">Cancel</button></div>`;
   const saved = savedRoom();
-  const name = esc(LIB.settings.onlineName||'');
+  const name = esc(PROFILE.name||'');
   return `${topbar('Play')}
   <div class="page stack online-page">
     ${ON.error?`<div class="callout">${esc(ON.error)}</div>`:''}
@@ -7748,6 +7860,10 @@ function viewLobby(){
       <label class="field"><span>Turn timer</span><select data-on-input="turnTimer">${opts([0,30,45,60,90,120], L.turnTimer, v=>v?fmtClock(v*1000):'Off')}</select></label>
       ${L.turnTimer ? `<label class="field"><span>Ability choice timer</span><select data-on-input="choiceTimer">${opts(CHOICE_PRESETS.map(x=>x[0]), L.choiceTimer, v=>fmtClock(v*1000))}</select></label>` : '<div></div>'}
     </div>
+    <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
+      <input type="checkbox" data-on-input="mulligan" ${L.mulligan!==false?'checked':''} style="width:auto">
+      <span class="tiny">One mulligan each in round 1</span>
+    </label>
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-on-input="sandbox" ${L.sandbox?'checked':''} style="width:auto">
       <span class="tiny"><b>Sandbox mode</b> \u2014 everyone gets the \u{1F9EA} bench: add Energy, put any card in a hand, change the round, reset the board.</span>
@@ -7821,7 +7937,7 @@ function askName(){
 document.addEventListener('input', e=>{
   const el = e.target, k = el.dataset && el.dataset.onInput;
   if(!k) return;
-  if(k==='name'){ LIB.settings.onlineName = el.value.slice(0,24); saveSoon(); return; }
+  if(k==='name'){ setProfileName(el.value); return; }
   if(k==='code'){ ON.joinCode = el.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5); if(el.value!==ON.joinCode) el.value = ON.joinCode; return; }
 });
 document.addEventListener('change', e=>{
@@ -7834,7 +7950,7 @@ document.addEventListener('change', e=>{
     else { ON.lobby.seats[i].deck = el.value; relay({data:{t:'deck', id:el.value}}); }
     render(); return;
   }
-  if(isHost() && ON.lobby && k==='sandbox'){ ON.lobby.sandbox = el.checked; hostSync(); render(); return; }
+  if(isHost() && ON.lobby && (k==='sandbox' || k==='mulligan')){ ON.lobby[k] = el.checked; hostSync(); render(); return; }
   if(isHost() && ON.lobby && ['planets','rounds','turnTimer','choiceTimer'].includes(k)){ ON.lobby[k] = +el.value; hostSync(); render(); }
 });
 
@@ -7856,6 +7972,133 @@ function onlineBoot(){
 }
 
 /* ------------------------------------------------------------------
+   10. PROFILE
+   Who plays on this device, and how their games have gone. Kept in this
+   browser's storage, separate from the card library, so resetting or
+   replacing the library never touches it:
+     {v, name, games:[{id, at, mode, seat, result, won, players, rows, reason, rounds, log}]}
+   Newest game first. The last LOGS_KEPT games keep their full log (what this
+   player was allowed to see), the rest just the result. The name fills in
+   your seat in local games and is what other players see online.
+   ------------------------------------------------------------------ */
+const PROFILE_KEY = KEY + '.profile';
+const HISTORY_MAX = 200, LOGS_KEPT = 30;
+function loadProfile(){
+  try{ const p = JSON.parse(localStorage.getItem(PROFILE_KEY)||'null'); if(p && Array.isArray(p.games)) return p; }catch(e){}
+  return {v:1, name:'', games:[]};
+}
+let PROFILE = loadProfile();
+function saveProfile(){
+  for(let tries = 0; tries < 4; tries++){
+    try{ localStorage.setItem(PROFILE_KEY, JSON.stringify(PROFILE)); return true; }
+    catch(e){                                   // storage full: older logs go first
+      const withLog = PROFILE.games.map((g,i)=>g.log?i:-1).filter(i=>i>=0);
+      if(!withLog.length) return false;
+      withLog.slice(Math.floor(withLog.length/2)).forEach(i=>{ PROFILE.games[i].log = null; });
+    }
+  }
+  return false;
+}
+const profileName = () => (PROFILE.name||'').trim().slice(0, 24);
+function setProfileName(v){ PROFILE.name = String(v||'').slice(0, 24); saveProfile(); }
+
+/** Which seat this device played, for the record. */
+function recordSeat(){
+  if(G.isView) return G.viewer;
+  if(G.online) return NET.seat!=null ? NET.seat : 0;
+  const humans = G.players.filter(p=>p.kind==='human');
+  if(!humans.length) return null;                              // bots only: nobody to record for
+  const mine = humans.find(p=>profileName() && p.name===profileName());
+  return (mine || humans[0]).idx;
+}
+/** A finished game goes into the history, once. Sandbox games and replays don't count. */
+function recordGame(){
+  if(!G || !G.over || !G.result || G.sandbox || UI.replaying || !G.gameId) return;
+  if(PROFILE.games.some(g=>g.id===G.gameId)) return;
+  const seat = recordSeat();
+  if(seat==null) return;
+  const r = G.result;
+  const entry = {
+    id: G.gameId, at: Date.now(), mode: (G.online || G.isView) ? 'online' : 'local', seat,
+    result: r.winner==null ? 'draw' : r.winner===seat ? 'win' : 'loss',
+    won: r.won.slice(), reason: r.reason, rounds: G.rounds,
+    players: G.players.map(p=>({name:p.name, bot: p.kind==='bot' && !p.standIn})),
+    rows: r.rows.map(x=>({name:x.name, scores:x.scores.slice(), winner:x.winner})),
+    log: G.log.filter(l=>!l.vis || l.vis.includes(seat)).map(l=>l.rd ? {rd:1, t:l.t} : {t:l.t, w:l.who})
+  };
+  PROFILE.games.unshift(entry);
+  if(PROFILE.games.length > HISTORY_MAX) PROFILE.games.length = HISTORY_MAX;
+  PROFILE.games.forEach((g,i)=>{ if(i >= LOGS_KEPT) g.log = null; });
+  saveProfile();
+}
+function profileStats(){
+  const g = PROFILE.games;
+  const n = k => g.filter(x=>x.result===k).length;
+  const wins = n('win'), losses = n('loss'), draws = n('draw');
+  return {played:g.length, wins, losses, draws, rate: g.length ? Math.round(100*wins/g.length) : null,
+          online: g.filter(x=>x.mode==='online').length};
+}
+const RESULT_WORD = {win:'Win', loss:'Loss', draw:'Draw'};
+/** "3–2": your planets, then the best of everyone else's. */
+const scoreLine = g => { const mine = g.won[g.seat], other = Math.max(0, ...g.won.filter((_,i)=>i!==g.seat)); return mine+'–'+other; };
+const opponentsOf = g => g.players.filter((_,i)=>i!==g.seat);
+function whenText2(ts){
+  const d = new Date(ts), now = new Date();
+  const time = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  if(d.toDateString()===now.toDateString()) return 'Today, '+time;
+  return d.toLocaleDateString([], {month:'short', day:'numeric'})+', '+time;
+}
+
+function viewProfile(){
+  const st = profileStats();
+  const tile = (n, label, cls) => `<div class="pf-tile ${cls||''}"><b>${n}</b><span>${label}</span></div>`;
+  const rows = PROFILE.games.map(g=>{
+    const opp = opponentsOf(g);
+    const vs = opp.map(o=>esc(o.name)+(o.bot?' <i>(bot)</i>':'')).join(', ');
+    return `<button class="pf-game" data-act="histopen" data-id="${esc(g.id)}">
+      <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
+      <span class="pf-main"><b>vs ${vs || 'nobody'}</b>
+        <span>${g.mode==='online'?'Online':'This device'} · ${whenText2(g.at)}</span></span>
+      <span class="pf-score" aria-label="Planets: ${scoreLine(g)}">${scoreLine(g)}<small>planets</small></span>
+    </button>`;
+  }).join('');
+  return `${topbar('Profile')}
+  <div class="page stack profile-page">
+    <label class="field"><span>Your name</span>
+      <input data-pf="name" maxlength="24" placeholder="Your name in every game" value="${esc(PROFILE.name||'')}" autocomplete="nickname"></label>
+    <p class="tiny muted" style="margin:-6px 0 0">Fills in your seat in games on this device, and is what everyone sees online.</p>
+    <div class="pf-tiles">
+      ${tile(st.played, 'played')}${tile(st.wins, 'wins', 'win')}${tile(st.losses, 'losses', 'loss')}${tile(st.draws, 'draws')}
+      ${tile(st.rate==null ? '—' : st.rate+'%', 'win rate')}
+    </div>
+    <div class="section-head"><h3>Match history</h3><p>${st.played ? 'newest first · tap a game for its planets and log' : ''}</p></div>
+    ${rows ? `<div class="pf-list">${rows}</div>` : `<div class="empty-note">No games yet. Finished games land here — sandbox games don’t count.</div>`}
+    ${rows ? `<button class="btn sm ${UI.pfClear?'danger':'ghost'}" data-act="histclear" style="align-self:flex-start">${UI.pfClear?'Tap again to clear the history':'Clear match history'}</button>` : ''}
+    <p class="tiny muted">Stored in this browser only. The last ${LOGS_KEPT} games keep their full game log.</p>
+  </div>`;
+}
+function historySheetHTML(){
+  const g = PROFILE.games.find(x=>x.id===UI.histId);
+  if(!g) return '';
+  const pc = i => PCOLORS[i] || 'var(--ui-text)';
+  const head = g.players.map((p,i)=>`<span class="chip"><span class="dot" style="--pc:${pc(i)};display:inline-block"></span> ${esc(p.name)}${i===g.seat?' (you)':''}${p.bot?' · bot':''} · <b>${g.won[i]}</b></span>`).join('');
+  const rows = g.rows.map(r=>`<div class="score-line"><span class="pl">${esc(r.name)}</span>
+      <span class="pf-sc">${r.scores.map((v,i)=>`<b class="${r.winner===i?'top':''}"><span class="dot" style="--pc:${pc(i)}"></span>${v}</b>`).join('<i>\u2013</i>')}</span>
+      <span class="pf-win">${r.winner==null ? 'contested' : esc(g.players[r.winner].name)}</span></div>`).join('');
+  const log = g.log ? g.log.map(l=>l.rd ? `<div class="rd">${esc(l.t)}</div>`
+      : `<div>${l.w!=null?`<b style="color:${pc(l.w)}">●</b> `:''}${esc(l.t)}</div>`).join('') : '';
+  return `<div class="scrim" data-act="closesheet"></div><div class="sheet">
+    <div class="sheet-head"><h3>${RESULT_WORD[g.result]} · ${scoreLine(g)} planets</h3><button class="btn sm ghost" data-act="closesheet">Close</button></div>
+    <p class="tiny muted" style="margin-top:-6px">${g.mode==='online'?'Online':'On this device'} · ${whenText2(g.at)} · ${g.rounds} rounds${g.reason && g.reason!=='planets won' && g.result!=='draw' ? ' · decided by '+esc(g.reason) : ''}</p>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">${head}</div>
+    ${rows}
+    <div class="sb-label" style="margin-top:14px">Game log</div>
+    ${log ? `<div class="log">${log}</div>` : '<div class="empty-note">Only the result was kept for this older game.</div>'}
+  </div>`;
+}
+document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
+
+/* ------------------------------------------------------------------
    BOOT
    ------------------------------------------------------------------ */
 
@@ -7863,6 +8106,7 @@ LIB = blankLibrary();
 const hadSaved = load();
 try{ const th = localStorage.getItem(KEY+'.theme'); if(th) document.documentElement.dataset.theme = th; }catch(err){}
 fillSettings();
+if(!PROFILE.name && LIB.settings.onlineName){ setProfileName(LIB.settings.onlineName); }
 render();
 /* first visit to a copy on the web: start from the library it ships with */
 if(!hadSaved) fetchShippedLibrary().then(data=>{
