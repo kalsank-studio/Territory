@@ -1,4 +1,4 @@
-# Territory — prototype by Kalyan Sankar
+# Territory — prototype
 
 A playable implementation of the Territory design doc: six rounds, face-down
 placement, ordered reveal, planet slots with conditions and rewards, plus a
@@ -9,8 +9,6 @@ The game itself has no dependencies: open `game/index.html` in a browser
 network, and the game still runs without it. Putting it on the web, with online
 rooms, is in **[DEPLOY.md](DEPLOY.md)**.
 
-Claude AI was used extensively.
-
 ## Files
 
 | Path | What's in it |
@@ -18,14 +16,15 @@ Claude AI was used extensively.
 | `game/index.html` | Page shell. Two divs: `#app` for the current screen, `#overlay` for veils and sheets. |
 | `game/styles.css` | All styling. Theme tokens live at the top. |
 | `game/game.js` | Everything else, in eight numbered sections (see below). |
-| `game/library.json` | The card library a first-time visitor to the website starts with (cards, tokens, planets, decks). Replace it with an *Art & data* backup to ship your own. Opened from `file://`, the game skips it and uses the built-in set. |
+| `game/library.json` | The card library a first-time visitor to the website starts with (cards, tokens, planets, decks). Replace it with a *Studio → Art & data* backup to ship your own. Opened from `file://`, the game skips it and uses the built-in set. |
 | `game/art/` | Sprite images, referenced from cards as `art/name.png`. |
 | `cards/territory-cardlist.csv` | The card list as a table; `npm run library -- cards/territory-cardlist.csv "Card list"` rebuilds `game/library.json` from it. |
 | `server/worker.js` | The online room relay: a Cloudflare Worker and one Durable Object per room. See DEPLOY.md. |
+| `server/accounts.js` | Player accounts: one Durable Object per username, holding the name, record and match history. |
 | `build.js` | `npm run build`: writes `dist/` — `index.html` with the CSS and JS inlined (also a working offline single file), `library.json`, `art/`. |
 | `build-library.js` | Turns a card CSV into `game/library.json` with the studio's own importer. |
 | `wrangler.json`, `package.json` | Cloudflare config and the `build` / `dev` / `deploy` / `test` scripts. |
-| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
+| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-accounts.mjs` checks the account API and `test-accounts-ui.py` signs in from two browsers; `test-round4.py` covers the mulligan, unlocking, the top bar, the passive mark and glow, the draw trigger and the Profile; `test-round3.py` covers the Play menu, the round-open screen, optional effects, discards and summoning onto a slot; `test-contrast.py` checks text contrast everywhere. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
 | *(older)* | The earlier headless suites (`test-targeting.js`, `test-abilities.js`, `test-flow.js` and the rest) live with the original prototype files, not in this folder. |
 
 ## Layout of `game.js`
@@ -53,12 +52,93 @@ Round count, hand size, income and slots per player are in `RULES` at the top of
 `game.js`. Round count is also exposed in the setup screen; the others are not, so
 change them here.
 
+## Mulligan and unlocking
+
+- **One mulligan.** In round 1, while it's your placement turn and before you've
+  placed a card, **New hand** (tap twice) shuffles your whole hand into your deck and
+  deals the same number again: `{t:'mulligan', seat}`, once per player per game
+  (`p.mulled`). Nothing triggers — it's the opening hand dealt again. On by default; a
+  switch in the local setup and the online lobby (`settings.mulligan`, `G.mulligans`).
+  Bots keep their hands.
+- **Unlocking.** Placing at once, a player who has locked in can press **Unlock** while
+  anyone else is still placing: `{t:'unlock', seat}`. Once the last player locks in, the
+  reveal begins and it can't be taken back.
+
+## The top bar
+
+Three columns: Energy on the left, the round centred (`.hud-mid`: "Round **N** of 6"
+at 20–24 px, the phase under it), the tools on the right.
+
+## Profile
+
+Title → **Profile** (`viewProfile`, section 10 of `game.js`). Signed out, it's kept in
+this browser under `territory.v1.profile`, apart from the library. **Signed in**
+(username and password, `server/accounts.js`), it's kept on the server and follows the
+player to any browser:
+
+- `signIn` registers or logs in, adds this browser's own games to the account (by
+  id, so nothing is kept twice), then `syncAccount` loads the account's name and
+  history (games without their logs; `fetchLog` gets one when it's opened). The
+  token is kept under `territory.v1.account`, and a copy of the account under
+  `territory.v1.profile.account`, so it shows at once and works offline.
+- A game finished while signed in goes into `PROFILE.pending` and up with
+  `flushPending` — straight away, or when the browser is next online. A name change
+  is sent after a short pause (`pushName`). A 401 from the server signs the browser out.
+- Signing out shows this browser's own profile again.
+
+The parts:
+
+- **Your name** (`PROFILE.name`). It fills in the first human seat at a local table and is
+  your name online (the Play screen's name field is the same setting).
+- **Record**: played, wins, losses, draws, win rate — tiles across the top.
+- **Match history**: every finished game, newest first (`recordGame`, called from
+  `finishGame` on this device or the host, and from `guestView` when a guest sees the
+  game end), up to 200: result, opponents (bots marked), local or online, when, and
+  planets won ("3–2": yours, then the best of the rest). Tap one for each planet's final
+  Power and the game log — the log as you could see it, kept for the last 30 games
+  (`LOGS_KEPT`; if storage runs out, older logs go first). Sandbox games and replays
+  aren't recorded. In a local game with several people, the record is for the seat with
+  your name (the first human seat).
+- Games are told apart by `G.gameId`, which isn't part of the rules (left out of
+  `stateDigest`). Full replays later can hang off the same entries.
+
+## Choices on the board, optional effects, discards
+
+- **Summoning picks a slot.** When a person summons (a token, a graveyard card, "that
+  card") and more than one open slot is allowed, `summonAt` opens
+  `G.choice = {kind:'pickslot', side, options:[[planet, slot], …]}`. There's no pop-up:
+  the board shows the allowed open slots glowing (`.slot.summon-target`, ✓ when the
+  token would meet the slot's condition) and only those can be tapped. One allowed
+  slot, a bot, or "on a random planet" doesn't ask. If the person choosing isn't the
+  one looking at the board (a passive on someone else's turn), a sheet lists the slots.
+- **Optional effects.** Any effect can be marked optional (Studio: *Optional — ask
+  first, with a Skip button*; text: "You may …", or "(optional)" after "in order
+  to"). Before it fires, its owner gets *Use it* / *Skip* (`kind:'optional'`).
+  Skipping counts as not working, so an "in order to" after it is skipped too. Bots
+  always use it; a timed-out choice uses it.
+- **An opponent's discard is shown.** A card discarded from a hand that isn't on
+  screen turns up face up under the top bar with "<name> discards", holds for
+  `REVEAL_HOLD` (650 ms), then crumbles like any discard (`fxRevealVanish`). Online,
+  guests get the card's face from the graveyard in the new view.
+- **Wording.** One of your own cards that you pick reads "your card of choice"; an
+  enemy one "an enemy card of your choice". Both read back through the importer.
+
+## Contrast
+
+Every text colour is checked against what's drawn behind it. The board and the
+full-screen beats are always dark, so they redefine the `--ui-*` tokens to the dark
+set (anything on them, buttons included, gets light text); menus and sheets follow
+the light / dark theme. Buttons take `--ui-text`, never the colour around them.
+`test/test-contrast.py` measures every visible piece of text on every screen, in
+light and dark, from a screenshot with the text hidden (so gradients and scrims
+count), against WCAG AA (4.5:1, or 3:1 for large text).
+
 ## Game End
 
 On the final round, round-end abilities resolve first. Then, if any face-up card
 has an "at the end of the game" ability, `endOfRoundContinue` shows a Game End
 screen (`gameEndScreenHTML`, the round screen's frame, `GAME_END_MS` or a tap)
-listing those cards in the order they'll fire, and `fireGameEnd` runs them; choices
+listing those cards in the order they'll fire (2.5 s, or a tap), and `fireGameEnd` runs them; choices
 they ask for come up as usual. `G.gameEndDone` makes sure that happens once. Then the
 Final tally beat and `finishGame`. With no Game End cards in play the screen is
 skipped.
@@ -233,7 +313,12 @@ A card's `fx` is a list of effects, each an object like:
 ### Triggers, conditions, filters and options
 
 - **`when`** — omitted means on reveal. Passive values (`WHEN`): `drawn`, `discarded`,
-  `destroyed` (about this card), `graveIn`, `graveOut` (any card). `fireTrigger` queues a
+  `destroyed` (about this card), `graveIn`, `graveOut` (any card), `youDraw` ("Whenever
+  you draw a card on your turn": each card drawn by an ability — from the deck or the
+  graveyard — during its drawer's own reveal turn sets off that player's face-up cards
+  once; the round's draw and slot rewards don't; `drawWatchers`). A card with a passive
+  wears ◈ at the bottom left of its face (`passiveMarkHTML`), and lights up whenever one
+  fires (`fireTrigger` → `glowCard`, and a `glow` event for guests). `fireTrigger` queues a
   card's matching effects into `G.trigBuf`; `processQueue` flushes the buffer before its
   next item, behind a `restore` marker, so a trigger resolves right after the effect that
   caused it and the interrupted chain carries on exactly where it was. A passive's
@@ -414,7 +499,7 @@ once the last animation has finished.
 | --- | --- |
 | Energy gained (ability, harvest, income) | `fxEnergy(player, n, src)` queues it per player; each icon is 28 px and flies for `FX_MS.energyFly` (1.2 s); `flushEnergy` plays it when that player's own board is on screen and not veiled — icons fly from the card (or the round label, for income) to the pool, which counts up as each lands (`shownEnergy` holds the old number till then). |
 | Cards moving (Move, Swap) | `fxSlideStart` copies the card into `#fxlayer` before it moves; `fxSlideRun` slides the copy to where the card is now drawn while the real card waits hidden. |
-| Between rounds | `showRoundScreen` — a full-screen recap (planets by leader colour, each player's planets held / Energy / hand) for `ROUND_MS` (one beat: 1 s) or until tapped. |
+| Between rounds | One screen opens every round (`diceHTML`, shown by `showDice` from `startRound`): the round number, planets by leader colour, and one row per player with the planets they're winning (`planetsWinning`) and their die for who goes first. The dice tumble for `DICE_ROLL_MS`, land, and the winner's row lights up for `DICE_HOLD_MS` (1.4 s), or until tapped. `showRoundScreen` is now only the Game End screen. |
 | Who goes first | `startRound` calls `rollForFirst()` every round: each player rolls 1–6, a tie for the top re-rolls, the single highest becomes `G.first` and `turnOrder()` runs clockwise from them (logged). `showDice()` then plays it: the dice tumble for `DICE_ROLL_MS` (faces flicker on an interval, no re-render), land, and the winner is lifted in their colour for `DICE_HOLD_MS` — about 1.7 s in all, or until tapped. `UI.dice` is part of `busy()`, so input, bots, income Energy and the turn timer wait for it; the hand-over veil comes after it. With animations off the result shows without the tumble; with no layout (the headless tests) the overlay is skipped. Both full-screen beats are opaque so a hand underneath can't show through. |
 
 An arrival or glow redrawn mid-way is given a negative `animation-delay`, so it
@@ -465,7 +550,7 @@ Three ways to set it:
 
 - **Studio → pick a card → Upload.** The image is centre-cropped to 256 px, re-encoded
   as WebP, and stored as a data URL.
-- **Art & data → bulk sprite pack.** Paste JSON mapping names to images:
+- **Studio → Art & data → bulk sprite pack.** Paste JSON mapping names to images:
   ```json
   { "cards":   { "Spore Drone": "data:image/webp;base64,..." },
     "planets": { "Verdance":    "data:image/webp;base64,..." } }
@@ -477,7 +562,7 @@ Three ways to set it:
   (`readArtCell` takes `*.png|jpg|jpeg|webp|gif|svg|avif` paths as images, and
   `artCell` exports them as written), or `DEFAULT_CARDS`. The published page has
   no folder beside it, so the importer notes that there. Editing the defaults only
-  affects a fresh library — clear the saved one from Art & data → Reset, or bump `KEY`.
+  affects a fresh library — clear the saved one from Studio → Art & data → Reset, or bump `KEY`.
 
 Square images read best. Cards render art at roughly 40×34 in hand and full-bleed
 in a planet slot, so keep the subject centred.
@@ -503,7 +588,7 @@ which browser), so the instructions point people at the library backup.
 
 ## Backing up
 
-Art & data → Show my library JSON dumps cards, tokens, planets, decks, sprites and
+Studio → Art & data → Show my library JSON dumps cards, tokens, planets, decks, sprites and
 settings. Restore takes the same blob back, from the box or a `.json` file.
 
 ## Rulings this build makes
@@ -546,7 +631,7 @@ The design doc leaves these open:
 | --- | --- |
 | `territory-cards.csv` | Every card, then every token: `type, id, name, cost, power, rarity, ability, art, fx, notes`. `ability` is the rules text; `fx` is the same ability as exact JSON. |
 | `territory-planets.csv` | `id, name, art, hue`, then `slotN` and `slotN reward` for each slot — `Cost <= 3`, `Power >= 5`, `Any card`, `Strongest wins`; `+2 Energy`, `Draw 1`, `None`. |
-| `territory-library.json` | The whole library — cards, tokens, planets, decks, sprites. The same blob as *Art & data → Back up everything*, which now has a *Download a backup* button too. |
+| `territory-library.json` | The whole library — cards, tokens, planets, decks, sprites. The same blob as *Studio → Art & data → Back up everything*, which now has a *Download a backup* button too. |
 
 **Copy** puts a CSV on the clipboard instead. Sprites are written as `[sprite]` unless
 *Embed sprite images* is ticked: spreadsheet apps cut long cells off (Excel at 32,767
@@ -715,7 +800,7 @@ Section 9 of `game.js`, on top of the relay in `server/worker.js` (see DEPLOY.md
 
 | Piece | How it works |
 | --- | --- |
-| Screens | Title → **Play online** (`UI.screen = 'online'`, `viewOnline`): your name, *Make a room* (2–4 seats), *Join* by code, or *Rejoin / Resume* a room this device holds. In a room, `viewLobby`: the code, an invite link (`?room=CODE`), one row per seat with its deck, the host's settings (planets, rounds, turn and choice timers) and *Start*. Empty seats become bots. Lobby buttons use `data-on` and their own listeners, so they don't touch the main click switch. |
+| Screens | Title → **Play** (`UI.screen = 'online'`, `viewOnline`): *On this device* (the local setup), or online — your name, *Make a room* (2–4 seats), *Join* by code, or *Rejoin / Resume* a room this device holds. Sandbox mode is a switch in the local setup and in the host's lobby (`ON.lobby.sandbox`); online, every seat gets the bench. In a room, `viewLobby`: the code, an invite link (`?room=CODE`), one row per seat with its deck, the host's settings (planets, rounds, turn and choice timers) and *Start*. Empty seats become bots. Lobby buttons use `data-on` and their own listeners, so they don't touch the main click switch. |
 | Messages | Inside the relay's `{data}`. Guest → host: `{t:'hello'}`, `{t:'deck', id}`, `{t:'cmd', cmd}`. Host → guest: `{t:'lobby', lobby, decks, reset?}`, `{t:'view', v, ui, arts}`, `{t:'clock', timers}`, `{t:'nope', why}`, `{t:'closed'}`. |
 | Commands | A guest's `dispatch` checks the move against its own view first (`cmdCheck`, and `dryRun` of place / move / unplace on a copy), then sends it. The host overwrites `cmd.seat` with the sender's seat, refuses `sandbox` and `standin` from guests, and runs `dispatch` as for its own taps. |
 | Views | `render()` on the host calls `hostBroadcast()` (30 ms debounce): each online guest gets `playerView(G, seat)` with only the events it hasn't had, plus `hostScreenState()` — the beat bar, the round / Game End screen, the dice, and both clocks. A view identical to the last one sent isn't sent again. |

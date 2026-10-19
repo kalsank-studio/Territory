@@ -5,12 +5,14 @@ Everything runs on one free Cloudflare Worker:
 - **The game page.** `npm run build` writes `dist/`: the whole game as one `index.html`, plus `library.json`
   (the cards a first-time visitor starts with) and any sprite files in `game/art/`. Cloudflare serves these
   files directly. Requests for static files are free and unlimited.
+- **Player accounts.** `server/accounts.js` keeps each player's name, record and match history under a
+  username and password, so their Profile follows them to any browser. One Durable Object per account.
 - **The room relay.** `server/worker.js` answers `/api/…` only. It makes rooms with five-letter codes and
   passes messages between the players in a room. Each room is a Durable Object; the free plan allows
   100,000 requests a day, and an idle room costs nothing.
 
 You need free GitHub and Cloudflare accounts. You'll get an address like
-`https://territory.<your-name>.workers.dev`. Open it on two phones, tap **Play online**, make a room on one
+`https://territory.<your-name>.workers.dev`. Open it on two phones, tap **Play → Make a room** on one
 and type its code (or open the invite link) on the other.
 
 ## Route A — from GitHub (every push goes live; nothing to install)
@@ -69,12 +71,12 @@ with a **Card list** deck holding one of each of your cards.
 
 To ship exactly what you have in the studio — your decks, planets and uploaded sprites included:
 
-1. In the game: **Art & data → Download a backup**.
+1. In the game: **Studio → Art & data → Download a backup**.
 2. Save the file as `game/library.json`, replacing the one there.
 3. Deploy again.
 
 People who visited before keep their own copy. They can take the new one from
-**Art & data → Take this site's card library**.
+**Studio → Art & data → Take this site's card library**.
 
 Only have a spreadsheet? `npm run library -- cards/your-list.csv "Deck name"` rebuilds `library.json` from
 a CSV with the same importer the studio uses, and lists any rows it flagged.
@@ -97,9 +99,35 @@ Keep the `token`: reconnecting with `?token=…` puts you back in the same seat.
 half minute or so to keep a phone's connection open; it's answered `"pong"` without waking the room.
 A room with nobody connected for a day deletes itself.
 
+## Accounts
+
+Nothing to set up: the next deploy adds them (`wrangler.json` has a second Durable Object, `Account`, with
+its own migration, `v2`). Players open **Profile → Sign in / Create account**. Games already recorded in that
+browser are added to the account, and every game finished while signed in is saved to it — online games
+for each player on their own device, local games for the signed-in player. A browser that's offline keeps
+the games and saves them when it's back.
+
+| Request | What it does |
+| --- | --- |
+| `POST /api/account/register` · `/login` | `{username, password}` → `{token, username}` |
+| `GET /api/account` | name and match history (without logs) |
+| `PUT /api/account` | `{name}` — the display name |
+| `POST /api/account/games` | `{games:[…]}` — adds finished games; one already there is kept once |
+| `GET /api/account/games/<id>` | one game with its log |
+| `DELETE /api/account/games` · `POST /api/account/logout` | clear the history · sign this browser out |
+
+Everything except register and login sends `Authorization: Bearer <token>`.
+`BASE=https://territory.<your-name>.workers.dev node test/test-accounts.mjs` checks a deployed copy (it makes
+a throwaway account each run).
+
+**How safe it is.** Passwords are stored hashed (PBKDF2-SHA-256 with a salt), never as plain text, and the
+site is HTTPS. But there's no limit on login attempts, no password reset, and no way to delete an account
+from the game yet. Fine for friends; tell players not to reuse a password that matters. To see or remove
+accounts, use the Cloudflare dashboard (Workers & Pages → territory → Durable Objects).
+
 ## How online play works
 
-- **Play online → Make a room.** Your device becomes the host: it runs the game, and the relay just passes
+- **Play → Make a room.** Your device becomes the host: it runs the game, and the relay just passes
   messages. Send the five-letter code or the invite link (it opens the join screen with the code filled in).
 - **The lobby.** Everyone picks a deck from the host's library (the decks the site ships, plus any the host
   has made). The host sets planets, rounds and the timers, and starts once at least one friend is in;
@@ -115,7 +143,7 @@ A room with nobody connected for a day deletes itself.
 
 ## Limits of this version
 
-- **No security.** Anyone with a room code can join an open seat, and the host's browser holds the whole
+- **Light security.** Anyone with a room code can join an open seat, and the host's browser holds the whole
   game (a host who opens the developer tools can see everything). Fine for friends; not for strangers or
   ranked play. That needs the game to run on the server instead — the engine is ready for it
   (`dispatch` / `playerView`), it's the next big step after this one.

@@ -12,6 +12,9 @@
           ?token=…  reclaim the seat this token held (reconnecting)
           ?name=…   what to call this player
 
+   Player accounts (name, record, match history) are in accounts.js:
+   /api/account/… — see there.
+
    On the socket, a client sends JSON:
      {data, to?}   relay `data`; `to` is a seat number, 'host' or 'all'.
                    Unset: the host's messages go to everyone else, a guest's
@@ -28,6 +31,8 @@
    =================================================================== */
 
 import { DurableObject } from 'cloudflare:workers';
+import { Account, accountRoute } from './accounts.js';
+export { Account };
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';   // no 0/O, 1/I/L
 const CODE_LENGTH = 5;
@@ -37,8 +42,8 @@ const NAME_MAX = 24;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization'
 };
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
@@ -78,6 +83,9 @@ export default {
       const info = await room.info();
       return info ? json(info) : json({ error: 'No room with that code.' }, 404);
     }
+
+    const acct = await accountRoute(request, env, url, json);
+    if(acct) return acct;
 
     if(url.pathname.startsWith('/api/')) return json({ error: 'Not found.' }, 404);
     /* Everything else is a file in dist/, served before this Worker runs.

@@ -4675,7 +4675,7 @@ function viewTitle(){
         <button class="btn ${inRoom()?'':'primary'}" data-on="open">Play<span class="k">host, join, or on this device</span></button>
         <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, art &amp; data</span></button>
         <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
-        <button class="btn" data-act="go" data-screen="profile">Profile<span class="k">${(()=>{ const st = profileStats(); return st.played ? st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 '+esc(profileName()||'no name yet') : esc(profileName()||'name, record, history'); })()}</span></button>
+        <button class="btn" data-act="go" data-screen="profile">Profile<span class="k">${(()=>{ const st = profileStats(); return st.played ? st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 '+esc(ACCT ? ACCT.user : (profileName()||'no name yet')) : esc(ACCT ? ACCT.user : (profileName()||'sign in, record, history')); })()}</span></button>
         <button class="btn" data-act="go" data-screen="rules">How it plays</button>
       </div>
     </div>
@@ -6812,7 +6812,9 @@ document.addEventListener('click', e=>{
     case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
     case 'histclear':
       if(!UI.pfClear){ UI.pfClear = true; render(); setTimeout(()=>{ UI.pfClear = false; if(UI.screen==='profile') render(); }, 3500); break; }
-      UI.pfClear = false; PROFILE.games = []; saveProfile(); toast('Match history cleared.'); render(); break;
+      UI.pfClear = false; PROFILE.games = []; PROFILE.pending = []; saveProfile();
+      if(ACCT) acctCall('DELETE', '/api/account/games').catch(()=>{});
+      toast('Match history cleared.'); render(); break;
     case 'choicepeek': if(G && G.choice){ UI.choicePeek = UI.choicePeek===G.choice ? null : G.choice; UI.sheet = null; UI.peek = null; UI.sel = null; render(); } break;
     case 'peekback': { const back = UI.peekStack && UI.peekStack.pop(); if(back){ UI.peek = back; render(); } break; }
     case 'theme': {
@@ -7983,14 +7985,26 @@ function onlineBoot(){
    ------------------------------------------------------------------ */
 const PROFILE_KEY = KEY + '.profile';
 const HISTORY_MAX = 200, LOGS_KEPT = 30;
+/* Signed in, the profile lives on the server (server/accounts.js) and this
+   browser keeps a copy of it (ACCOUNT_CACHE_KEY) so it shows at once and
+   works offline; games recorded meanwhile wait in `pending` until they've
+   been saved. Signed out, it's this browser's own profile (PROFILE_KEY). */
+const ACCOUNT_KEY = KEY + '.account';            // {user, token}
+const ACCOUNT_CACHE_KEY = KEY + '.profile.account';
+function loadAccount(){ try{ const a = JSON.parse(localStorage.getItem(ACCOUNT_KEY)||'null'); return a && a.token ? a : null; }catch(e){ return null; } }
+let ACCT = loadAccount();
+const profileKey = () => ACCT ? ACCOUNT_CACHE_KEY : PROFILE_KEY;
 function loadProfile(){
-  try{ const p = JSON.parse(localStorage.getItem(PROFILE_KEY)||'null'); if(p && Array.isArray(p.games)) return p; }catch(e){}
-  return {v:1, name:'', games:[]};
+  try{
+    const p = JSON.parse(localStorage.getItem(profileKey())||'null');
+    if(p && Array.isArray(p.games) && (!ACCT || p.user===ACCT.user)) return p;
+  }catch(e){}
+  return {v:1, name: ACCT ? ACCT.user : '', games:[], user: ACCT ? ACCT.user : undefined};
 }
 let PROFILE = loadProfile();
 function saveProfile(){
   for(let tries = 0; tries < 4; tries++){
-    try{ localStorage.setItem(PROFILE_KEY, JSON.stringify(PROFILE)); return true; }
+    try{ localStorage.setItem(profileKey(), JSON.stringify(PROFILE)); return true; }
     catch(e){                                   // storage full: older logs go first
       const withLog = PROFILE.games.map((g,i)=>g.log?i:-1).filter(i=>i>=0);
       if(!withLog.length) return false;
@@ -8000,7 +8014,10 @@ function saveProfile(){
   return false;
 }
 const profileName = () => (PROFILE.name||'').trim().slice(0, 24);
-function setProfileName(v){ PROFILE.name = String(v||'').slice(0, 24); saveProfile(); }
+function setProfileName(v){
+  PROFILE.name = String(v||'').slice(0, 24); saveProfile();
+  if(ACCT){ PROFILE.nameDirty = true; clearTimeout(AC.nameT); AC.nameT = setTimeout(pushName, 700); }
+}
 
 /** Which seat this device played, for the record. */
 function recordSeat(){
@@ -8028,8 +8045,10 @@ function recordGame(){
   };
   PROFILE.games.unshift(entry);
   if(PROFILE.games.length > HISTORY_MAX) PROFILE.games.length = HISTORY_MAX;
-  PROFILE.games.forEach((g,i)=>{ if(i >= LOGS_KEPT) g.log = null; });
+  PROFILE.games.forEach((g,i)=>{ if(i >= LOGS_KEPT && !ACCT) g.log = null; });
+  if(ACCT){ (PROFILE.pending = PROFILE.pending || []).push(entry.id); }
   saveProfile();
+  if(ACCT) flushPending();
 }
 function profileStats(){
   const g = PROFILE.games;
@@ -8064,6 +8083,7 @@ function viewProfile(){
   }).join('');
   return `${topbar('Profile')}
   <div class="page stack profile-page">
+    ${accountCardHTML()}
     <label class="field"><span>Your name</span>
       <input data-pf="name" maxlength="24" placeholder="Your name in every game" value="${esc(PROFILE.name||'')}" autocomplete="nickname"></label>
     <p class="tiny muted" style="margin:-6px 0 0">Fills in your seat in games on this device, and is what everyone sees online.</p>
@@ -8074,12 +8094,13 @@ function viewProfile(){
     <div class="section-head"><h3>Match history</h3><p>${st.played ? 'newest first · tap a game for its planets and log' : ''}</p></div>
     ${rows ? `<div class="pf-list">${rows}</div>` : `<div class="empty-note">No games yet. Finished games land here — sandbox games don’t count.</div>`}
     ${rows ? `<button class="btn sm ${UI.pfClear?'danger':'ghost'}" data-act="histclear" style="align-self:flex-start">${UI.pfClear?'Tap again to clear the history':'Clear match history'}</button>` : ''}
-    <p class="tiny muted">Stored in this browser only. The last ${LOGS_KEPT} games keep their full game log.</p>
+    <p class="tiny muted">${ACCT ? 'Saved to your account: sign in on any browser or device to see it.' : `Stored in this browser only \u2014 sign in to keep it everywhere. The last ${LOGS_KEPT} games keep their full game log.`}</p>
   </div>`;
 }
 function historySheetHTML(){
   const g = PROFILE.games.find(x=>x.id===UI.histId);
   if(!g) return '';
+  if(!g.log && g.hasLog && ACCT && !AC.fetching[g.id]) fetchLog(g.id);
   const pc = i => PCOLORS[i] || 'var(--ui-text)';
   const head = g.players.map((p,i)=>`<span class="chip"><span class="dot" style="--pc:${pc(i)};display:inline-block"></span> ${esc(p.name)}${i===g.seat?' (you)':''}${p.bot?' · bot':''} · <b>${g.won[i]}</b></span>`).join('');
   const rows = g.rows.map(r=>`<div class="score-line"><span class="pl">${esc(r.name)}</span>
@@ -8093,10 +8114,143 @@ function historySheetHTML(){
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">${head}</div>
     ${rows}
     <div class="sb-label" style="margin-top:14px">Game log</div>
-    ${log ? `<div class="log">${log}</div>` : '<div class="empty-note">Only the result was kept for this older game.</div>'}
+    ${log ? `<div class="log">${log}</div>` : g.hasLog && ACCT ? '<div class="net-wait"><span class="spinner"></span>Loading the log\u2026</div>' : '<div class="empty-note">Only the result was kept for this older game.</div>'}
   </div>`;
 }
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
+
+/* --- signing in ------------------------------------------------------------ */
+const AC = { busy:false, error:'', status:'', nameT:null, fetching:{}, flushing:false };
+const accountsAvailable = () => onlineAvailable();
+async function acctCall(method, path, body){
+  const r = await fetch(location.origin + path, {method, headers: Object.assign({'Content-Type':'application/json'}, ACCT ? {Authorization:'Bearer '+ACCT.token} : {}),
+    body: body ? JSON.stringify(body) : undefined});
+  let j = {}; try{ j = await r.json(); }catch(e){}
+  if(r.status===401 && ACCT && !/register|login/.test(path)){ signedOutByServer(); }
+  if(!r.ok) throw Object.assign(new Error(j.error || 'The server said no.'), {status:r.status});
+  return j;
+}
+function signedOutByServer(){
+  ACCT = null; try{ localStorage.removeItem(ACCOUNT_KEY); }catch(e){}
+  PROFILE = loadProfile(); AC.error = 'You were signed out. Sign in again to keep saving to your account.';
+  render();
+}
+/** Sign in or create an account. This browser's own games go into the account
+    (the same game is never kept twice), then the account is loaded. */
+async function signIn(username, password, create){
+  if(AC.busy) return;
+  AC.busy = true; AC.error = ''; render();
+  try{
+    const r = await acctCall('POST', create ? '/api/account/register' : '/api/account/login', {username, password});
+    const local = loadDeviceProfile();
+    ACCT = {user:r.username, token:r.token};
+    try{ localStorage.setItem(ACCOUNT_KEY, JSON.stringify(ACCT)); }catch(e){}
+    PROFILE = loadProfile();
+    if(local.games.length) await acctCall('POST', '/api/account/games', {games: local.games}).catch(()=>{});
+    if(create && local.name) await acctCall('PUT', '/api/account', {name: local.name}).catch(()=>{});
+    await syncAccount();
+    toast(create ? `Account ${r.username} made. Your record now follows you.` : `Signed in as ${r.username}.`);
+    UI.pfPass = '';
+  }catch(e){ AC.error = e.message || String(e); }
+  AC.busy = false; render();
+}
+function loadDeviceProfile(){
+  try{ const p = JSON.parse(localStorage.getItem(PROFILE_KEY)||'null'); if(p && Array.isArray(p.games)) return p; }catch(e){}
+  return {v:1, name:'', games:[]};
+}
+function signOut(){
+  if(ACCT) acctCall('POST', '/api/account/logout').catch(()=>{});
+  ACCT = null; try{ localStorage.removeItem(ACCOUNT_KEY); }catch(e){}
+  PROFILE = loadProfile(); AC.error = ''; AC.status = '';
+  render();
+}
+/** Fetch the account: its name and history (logs come one game at a time). */
+async function syncAccount(){
+  if(!ACCT) return;
+  try{
+    await flushPending();
+    const r = await acctCall('GET', '/api/account');
+    if(!ACCT) return;
+    const logs = {}; PROFILE.games.forEach(g=>{ if(g.log) logs[g.id] = g.log; });
+    const server = new Set(r.games.map(g=>g.id));
+    const waiting = PROFILE.games.filter(g=>(PROFILE.pending||[]).includes(g.id) && !server.has(g.id));
+    PROFILE.games = waiting.concat(r.games.map(g=>logs[g.id] ? Object.assign(g, {log:logs[g.id]}) : g)).sort((a,b)=>(b.at||0)-(a.at||0));
+    if(!PROFILE.nameDirty) PROFILE.name = r.name;
+    PROFILE.user = r.username;
+    AC.status = 'synced';
+    saveProfile();
+    if(PROFILE.nameDirty) pushName();
+  }catch(e){ if(ACCT) AC.status = 'offline'; }
+  if(UI.screen==='profile' || UI.screen==='title') render();
+}
+/** Games recorded while signed in go up as soon as they can. */
+async function flushPending(){
+  if(!ACCT || AC.flushing || !(PROFILE.pending||[]).length) return;
+  AC.flushing = true;
+  try{
+    const ids = PROFILE.pending.slice();
+    const games = PROFILE.games.filter(g=>ids.includes(g.id));
+    await acctCall('POST', '/api/account/games', {games});
+    PROFILE.pending = (PROFILE.pending||[]).filter(id=>!ids.includes(id));
+    PROFILE.games.forEach((g,i)=>{ if(ids.includes(g.id) && g.log){ g.hasLog = true; if(i >= LOGS_KEPT) delete g.log; } });
+    AC.status = 'synced';
+    saveProfile();
+  }catch(e){ AC.status = 'offline'; }
+  AC.flushing = false;
+}
+async function pushName(){
+  if(!ACCT) return;
+  try{ await acctCall('PUT', '/api/account', {name: PROFILE.name}); PROFILE.nameDirty = false; saveProfile(); }catch(e){ AC.status = 'offline'; }
+}
+async function fetchLog(id){
+  AC.fetching[id] = true;
+  try{
+    const r = await acctCall('GET', '/api/account/games/'+encodeURIComponent(id));
+    const g = PROFILE.games.find(x=>x.id===id);
+    if(g && r.game){ g.log = r.game.log || null; if(!g.log) g.hasLog = false; saveProfile(); }
+  }catch(e){ const g = PROFILE.games.find(x=>x.id===id); if(g) g.hasLog = false; }
+  AC.fetching[id] = false;
+  if(UI.sheet==='hist') render();
+}
+function accountCardHTML(){
+  if(!accountsAvailable()) return `<div class="callout">Accounts work on the website copy of Territory. Here, your record is kept in this browser.</div>`;
+  if(ACCT) return `<div class="card-panel acct-card in">
+      <div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap">
+        <span class="acct-badge" aria-hidden="true">${esc((ACCT.user||'?').charAt(0).toUpperCase())}</span>
+        <div class="acct-who"><b>${esc(ACCT.user)}</b><span>${AC.status==='offline' ? 'Offline \u2014 games will save when you\u2019re back' : (PROFILE.pending||[]).length ? 'Saving\u2026' : 'Signed in \u00B7 saved to your account'}</span></div>
+        <button class="btn sm" data-act="acctout" style="margin-left:auto">Sign out</button>
+      </div>
+    </div>`;
+  return `<div class="card-panel acct-card">
+      <h3 class="op-h">Sign in</h3>
+      <p class="tiny muted" style="margin:0 0 10px">Keep your name, record and match history on every browser and device. Games already on this browser are added to your account.</p>
+      ${AC.error ? `<p class="acct-err" role="alert">${esc(AC.error)}</p>` : ''}
+      <div class="grid2">
+        <label class="field"><span>Username</span><input data-pf="user" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" value="${esc(UI.pfUser||'')}"></label>
+        <label class="field"><span>Password</span><input data-pf="pass" type="password" autocomplete="current-password" maxlength="200" value="${esc(UI.pfPass||'')}"></label>
+      </div>
+      <div class="row" style="gap:8px;margin-top:10px">
+        <button class="btn primary" data-act="acctin" ${AC.busy?'disabled':''}>${AC.busy?'Signing in\u2026':'Sign in'}</button>
+        <button class="btn" data-act="acctnew" ${AC.busy?'disabled':''}>Create account</button>
+      </div>
+      <p class="tiny muted" style="margin:8px 0 0">Usernames are 3\u201320 letters, numbers, - or _. Pick a password you don\u2019t use anywhere else.</p>
+    </div>`;
+}
+document.addEventListener('input', e=>{
+  const k = e.target.dataset && e.target.dataset.pf;
+  if(k==='user') UI.pfUser = e.target.value;
+  if(k==='pass') UI.pfPass = e.target.value;
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='Enter' && e.target.dataset && (e.target.dataset.pf==='user' || e.target.dataset.pf==='pass')){ e.preventDefault(); signIn(UI.pfUser||'', UI.pfPass||'', false); }
+});
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-act]'); if(!t) return;
+  if(t.dataset.act==='acctin') signIn(UI.pfUser||'', UI.pfPass||'', false);
+  if(t.dataset.act==='acctnew') signIn(UI.pfUser||'', UI.pfPass||'', true);
+  if(t.dataset.act==='acctout') signOut();
+});
+window.addEventListener('online', ()=>{ if(ACCT) syncAccount(); });
 
 /* ------------------------------------------------------------------
    BOOT
@@ -8115,6 +8269,7 @@ if(!hadSaved) fetchShippedLibrary().then(data=>{
 });
 downloadsCap();   // ask early, so the first Download doesn't wait on it
 onlineBoot();
+if(ACCT && accountsAvailable()) syncAccount();
 
 window.addEventListener('pagehide', ()=>{ clearTimeout(saveTimer); save(); });
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden'){ clearTimeout(saveTimer); save(); } });

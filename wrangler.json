@@ -5,10 +5,11 @@
   "compatibility_date": "2026-09-01",
   "assets": { "directory": "./dist" },
   "durable_objects": {
-    "bindings": [ { "name": "ROOMS", "class_name": "Room" } ]
+    "bindings": [ { "name": "ROOMS", "class_name": "Room" }, { "name": "ACCOUNTS", "class_name": "Account" } ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Room"] }
+    { "tag": "v1", "new_sqlite_classes": ["Room"] },
+    { "tag": "v2", "new_sqlite_classes": ["Account"] }
   ],
   "observability": {
     "logs": { "enabled": true, "head_sampling_rate": 1, "invocation_logs": true, "persist": true },
