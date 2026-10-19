@@ -1,0 +1,1913 @@
+{
+ "cards": [
+  {
+   "id": "card-1",
+   "name": "Judgment",
+   "cost": 5,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "✊"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "target": {
+      "player": "self",
+      "here": true,
+      "rule": "choice"
+     },
+     "then": true
+    },
+    {
+     "v": "destroy",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-3",
+   "name": "Blade",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🗡"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-4",
+   "name": "Broadsword",
+   "cost": 3,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🦯"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-6",
+   "name": "Battleaxe",
+   "cost": 4,
+   "power": 8,
+   "art": {
+    "t": "emoji",
+    "v": "🪓"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-8",
+   "name": "Ambrosia",
+   "cost": 2,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🧪"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "alliesHere",
+     "n": 2
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-10",
+   "name": "Atlas",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🗺️"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-12",
+   "name": "Reforge",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🔨"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "t": "self",
+     "n": 1
+    },
+    {
+     "v": "draw",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-14",
+   "name": "Ward",
+   "cost": 2,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "💂"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-15",
+   "name": "Caravan",
+   "cost": 3,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🚃"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "t": "self",
+     "n": 2
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-16",
+   "name": "Absolver",
+   "cost": 3,
+   "power": 7,
+   "art": {
+    "t": "emoji",
+    "v": "🥷🏿"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-17",
+   "name": "Gemini",
+   "cost": 4,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "⚔️"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "t": "yoursHere",
+     "n": 2,
+     "tok": "sapling"
+    },
+    {
+     "v": "gainEnergy",
+     "t": "self",
+     "n": 2
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-18",
+   "name": "Starfall",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "⭐"
+   },
+   "fx": [
+    {
+     "v": "create",
+     "t": "self",
+     "n": 1,
+     "tok": "stardust"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-19",
+   "name": "Scythe of Mankala",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🔪"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 1,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     },
+     "nFrom": "grave"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-20",
+   "name": "Titan",
+   "cost": 5,
+   "power": 13,
+   "art": {
+    "t": "emoji",
+    "v": "🛸"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "t": "alliesHere",
+     "n": 1
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-22",
+   "name": "Carrier ",
+   "cost": 4,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🗼"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 4,
+     "then": true,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-23",
+   "name": "The Corruption",
+   "cost": 3,
+   "power": 9,
+   "art": {
+    "t": "emoji",
+    "v": "🧟"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "n": 1,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-2",
+   "name": "Battle Standard",
+   "cost": 5,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🚩"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "yoursElsewhere",
+     "n": 1
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-5",
+   "name": "Glutton",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "👻"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "n": 1,
+     "t": "alliesHere",
+     "then": true
+    },
+    {
+     "v": "givePower",
+     "n": 5,
+     "t": "self"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-7",
+   "name": "Tree",
+   "cost": 1,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🌲"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "t": "self",
+     "n": 1,
+     "tok": "sapling"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-9",
+   "name": "Swarm",
+   "cost": 4,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🦈"
+   },
+   "fx": [
+    {
+     "v": "steal",
+     "to": "self",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     },
+     "n": 4
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-11",
+   "name": "Sahel",
+   "cost": 4,
+   "power": 7,
+   "art": {
+    "t": "emoji",
+    "v": "🪝"
+   },
+   "fx": [
+    {
+     "v": "move",
+     "dest": "here",
+     "target": {
+      "player": "choose",
+      "here": false,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-13",
+   "name": "Gambit",
+   "cost": 5,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🎴"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "n": 3,
+     "target": {
+      "player": "self",
+      "rule": "choice"
+     },
+     "then": true
+    },
+    {
+     "v": "destroy",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-21",
+   "name": "Skelly",
+   "cost": 5,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "💀"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "n": 1,
+     "target": {
+      "player": "self",
+      "rule": "choice"
+     },
+     "then": true
+    },
+    {
+     "v": "gainEnergy",
+     "n": 1,
+     "nFrom": "prevCost"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-24",
+   "name": "Amulet of Cochrane",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🧿"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "from": "grave",
+     "pick": {
+      "owner": "any",
+      "rule": "strongest"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-25",
+   "name": "Lightspark",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "💡"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "next"
+     },
+     "n": 2
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-26",
+   "name": "Felkonium",
+   "cost": 2,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🌠"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 2,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "last"
+     }
+    },
+    {
+     "v": "givePower",
+     "n": 2,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "next"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-27",
+   "name": "Darksight",
+   "cost": 3,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "⚰️"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "then": true,
+     "target": {
+      "player": "self",
+      "here": true,
+      "rule": "choice"
+     }
+    },
+    {
+     "v": "givePower",
+     "n": 1,
+     "nFrom": "prevPower",
+     "t": "self"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-28",
+   "name": "Bounty",
+   "cost": 4,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🪎"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "from": "deck",
+     "then": false
+    },
+    {
+     "v": "givePower",
+     "n": 1,
+     "t": "self",
+     "nFrom": "hand"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-29",
+   "name": "Krakoa",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🌋"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 1,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "next"
+     }
+    },
+    {
+     "v": "givePower",
+     "t": "self",
+     "n": 1,
+     "nFrom": "prevCost"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-30",
+   "name": "Torch",
+   "cost": 2,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🔥"
+   },
+   "fx": [
+    {
+     "v": "burn",
+     "n": 2,
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-31",
+   "name": "Flameheart",
+   "cost": 5,
+   "power": 8,
+   "art": {
+    "t": "emoji",
+    "v": "🐦‍🔥"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 4,
+     "t": "self",
+     "if": {
+      "src": "enemyMaxPower",
+      "op": "<",
+      "val": 6
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-32",
+   "name": "Carpet Bomb",
+   "cost": 3,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🧨"
+   },
+   "fx": [
+    {
+     "v": "burn",
+     "t": "enemiesHere",
+     "n": 2
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-33",
+   "name": "Bolt",
+   "cost": 4,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "⚡"
+   },
+   "fx": [
+    {
+     "v": "burn",
+     "n": 5,
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-34",
+   "name": "Siphon",
+   "cost": 3,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🚿"
+   },
+   "fx": [
+    {
+     "v": "steal",
+     "what": "power",
+     "to": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     },
+     "nFrom": "all",
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-35",
+   "name": "Aqitan",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🏦"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "self",
+     "n": 1,
+     "when": "activate",
+     "actCost": 1,
+     "actUses": 8
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-36",
+   "name": "Revenant",
+   "cost": 4,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🎃"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "self",
+     "n": 1,
+     "when": "graveIn"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-37",
+   "name": "Atun",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🥊"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     },
+     "only": {
+      "stat": "power",
+      "op": "<",
+      "valFrom": "selfPower"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-38",
+   "name": "Divine Crypt",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🪦"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     },
+     "only": {
+      "stat": "power",
+      "op": "<",
+      "valFrom": "hand"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-39",
+   "name": "Ameri Corp.",
+   "cost": 6,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🏭"
+   },
+   "fx": [
+    {
+     "v": "gainEnergy",
+     "n": 2,
+     "when": "roundStart"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-40",
+   "name": "Amphora",
+   "cost": 1,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🏺"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "discarded",
+     "from": "deck"
+    },
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "destroyed",
+     "from": "deck"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-41",
+   "name": "Enterprise",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🚀"
+   },
+   "fx": [
+    {
+     "v": "move",
+     "t": "self",
+     "when": "activate",
+     "actCost": 0,
+     "actUses": 3,
+     "dest": "choice"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-42",
+   "name": "Gravedigger",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🪏"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "from": "grave",
+     "at": "here",
+     "side": "self",
+     "pick": {
+      "owner": "any",
+      "rule": "random"
+     },
+     "only": {
+      "stat": "cost",
+      "op": "<=",
+      "val": 3
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-43",
+   "name": "Honeypot",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🍯"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "n": 1,
+     "when": "destroyed",
+     "target": {
+      "player": "self",
+      "here": true,
+      "rule": "choice"
+     },
+     "nFrom": "selfPower"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-44",
+   "name": "Catapult",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🎳"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "from": "token",
+     "tok": "token-1",
+     "at": "here",
+     "side": "choose"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-45",
+   "name": "Contract",
+   "cost": 1,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "📃"
+   },
+   "fx": [
+    {
+     "v": "gainEnergy",
+     "n": 1,
+     "if": {
+      "src": "round",
+      "op": "between",
+      "val": 1,
+      "val2": 2
+     }
+    },
+    {
+     "v": "draw",
+     "n": 1,
+     "from": "deck",
+     "if": {
+      "src": "round",
+      "op": "between",
+      "val": 3,
+      "val2": 4
+     }
+    },
+    {
+     "v": "givePower",
+     "t": "self",
+     "n": 2,
+     "if": {
+      "src": "round",
+      "op": "between",
+      "val": 5,
+      "val2": 6
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-46",
+   "name": "Clan of the Lotus",
+   "cost": 2,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🎍"
+   },
+   "fx": [
+    {
+     "v": "destroy",
+     "then": true,
+     "target": {
+      "player": "self",
+      "here": true,
+      "rule": "choice"
+     }
+    },
+    {
+     "v": "create",
+     "n": 1,
+     "tok": "token-2"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-47",
+   "name": "Wish",
+   "cost": 3,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🧞"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "from": "deck",
+     "then": true
+    },
+    {
+     "v": "summon",
+     "from": "prev",
+     "at": "here",
+     "side": "self"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-48",
+   "name": "Catharsis",
+   "cost": 3,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🗡️"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "n": 1,
+     "target": {
+      "player": "choose",
+      "rule": "random"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-49",
+   "name": "Glasses",
+   "cost": 3,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🕶️"
+   },
+   "fx": [
+    {
+     "v": "choose",
+     "n": 2,
+     "opts": [
+      {
+       "v": "draw",
+       "n": 1,
+       "from": "deck"
+      },
+      {
+       "v": "gainEnergy",
+       "n": 1
+      },
+      {
+       "v": "givePower",
+       "t": "self",
+       "n": 2
+      }
+     ]
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-50",
+   "name": "Totem of Sankaya",
+   "cost": 2,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🪆"
+   },
+   "fx": [
+    {
+     "v": "create",
+     "tok": "token-3",
+     "n": 1
+    },
+    {
+     "v": "move",
+     "when": "gameEnd",
+     "t": "self",
+     "dest": "choice"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-51",
+   "name": "Premonition",
+   "cost": 3,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "💫"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "when": "gameEnd",
+     "from": "token",
+     "tok": "stardust",
+     "at": "choice",
+     "side": "self"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-52",
+   "name": "Big Bang",
+   "cost": 5,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🌌"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "yoursAll",
+     "n": 4,
+     "only": {
+      "stat": "cost",
+      "op": "==",
+      "val": 1
+     },
+     "when": "gameEnd"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-53",
+   "name": "Starforge",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🌟"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "when": "activate",
+     "actCost": 1,
+     "actUses": 2,
+     "from": "token",
+     "tok": "stardust",
+     "at": "choice",
+     "side": "self"
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  },
+  {
+   "id": "card-54",
+   "name": "Shortcut",
+   "cost": 1,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🕳️"
+   },
+   "fx": [
+    {
+     "v": "move",
+     "dest": "choice",
+     "swap": true,
+     "target": {
+      "player": "self",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "elite"
+  }
+ ],
+ "tokens": [
+  {
+   "id": "sapling",
+   "name": "Sapling",
+   "cost": 1,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🌱"
+   },
+   "fx": [],
+   "token": true
+  },
+  {
+   "id": "stardust",
+   "name": "Stardust",
+   "cost": 1,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "⭐"
+   },
+   "fx": [],
+   "token": true
+  },
+  {
+   "id": "token-1",
+   "name": "Rock",
+   "cost": 1,
+   "power": 0,
+   "art": {
+    "t": "emoji",
+    "v": "🪨"
+   },
+   "fx": [],
+   "token": true
+  },
+  {
+   "id": "token-2",
+   "name": "Coin of the Lotus",
+   "cost": 1,
+   "power": 0,
+   "art": {
+    "t": "emoji",
+    "v": "🪙"
+   },
+   "fx": [
+    {
+     "v": "steal",
+     "what": "card",
+     "target": {
+      "player": "choose",
+      "rule": "random"
+     },
+     "n": 1
+    }
+   ],
+   "token": true
+  },
+  {
+   "id": "token-3",
+   "name": "Grimoire",
+   "cost": 1,
+   "power": 0,
+   "art": {
+    "t": "emoji",
+    "v": "📔"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "creator",
+     "n": 2
+    },
+    {
+     "v": "recall",
+     "t": "self"
+    },
+    {
+     "v": "move",
+     "t": "creator",
+     "dest": "here"
+    }
+   ],
+   "token": true
+  }
+ ],
+ "planets": [
+  {
+   "id": "verdance",
+   "name": "Dirge Winds",
+   "art": {
+    "t": "emoji",
+    "v": "🟢"
+   },
+   "hue": "#4fd6b0",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 6
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "<=",
+      "val": 2
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 8
+     },
+     "rew": {
+      "type": "draw",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "ashfall",
+   "name": "Ashfall Rim",
+   "art": {
+    "t": "emoji",
+    "v": "🟠"
+   },
+   "hue": "#f2856c",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "<=",
+      "val": 2
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 8
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "shoal",
+   "name": "The Shoal",
+   "art": {
+    "t": "emoji",
+    "v": "🔵"
+   },
+   "hue": "#5cbfe4",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "corolla",
+   "name": "Carillo Prime",
+   "art": {
+    "t": "emoji",
+    "v": "🟣"
+   },
+   "hue": "#a482f0",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": "==",
+      "val": 5
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "==",
+      "val": 7
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "==",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "hollow",
+   "name": "Hallow Moon",
+   "art": {
+    "t": "emoji",
+    "v": "⚪"
+   },
+   "hue": "#c9d6cf",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 4
+     },
+     "rew": {
+      "type": "draw",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 9
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 6
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "silt",
+   "name": "Crepusculariat",
+   "art": {
+    "t": "emoji",
+    "v": "🟤"
+   },
+   "hue": "#b98a5e",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "==",
+      "val": 5
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "==",
+      "val": 1
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "==",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "nimbus",
+   "name": "Nimbus Reach",
+   "art": {
+    "t": "emoji",
+    "v": "🟡"
+   },
+   "hue": "#f5b95c",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 5
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "==",
+      "val": 1
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 5
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "cradle",
+   "name": "Oasis",
+   "art": {
+    "t": "emoji",
+    "v": "🥚"
+   },
+   "hue": "#8fd6a0",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "winner",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "planet-1",
+   "name": "Pearl Kingdom",
+   "art": {
+    "t": "emoji",
+    "v": "⚪"
+   },
+   "hue": "#eeeeee",
+   "slots": [
+    {
+     "cond": {
+      "stat": "any",
+      "op": ">=",
+      "val": 0
+     },
+     "rew": {
+      "type": "none",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "winner",
+      "op": ">=",
+      "val": 0
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "winner",
+      "op": ">=",
+      "val": 0
+     },
+     "rew": {
+      "type": "draw",
+      "amount": 1
+     }
+    }
+   ]
+  }
+ ],
+ "decks": [
+  {
+   "id": "d1",
+   "name": "Full Standard",
+   "cards": [
+    "card-1",
+    "card-3",
+    "card-3",
+    "card-4",
+    "card-4",
+    "card-6",
+    "card-6",
+    "card-8",
+    "card-8",
+    "card-10",
+    "card-10",
+    "card-12",
+    "card-12",
+    "card-14",
+    "card-15",
+    "card-16",
+    "card-17",
+    "card-18",
+    "card-19",
+    "card-20",
+    "card-22",
+    "card-22",
+    "card-23",
+    "card-2",
+    "card-2",
+    "card-5",
+    "card-7",
+    "card-5",
+    "card-9",
+    "card-11",
+    "card-11",
+    "card-13",
+    "card-21",
+    "card-24",
+    "card-25",
+    "card-25",
+    "card-26",
+    "card-27",
+    "card-28",
+    "card-28",
+    "card-29",
+    "card-30",
+    "card-30",
+    "card-31",
+    "card-32",
+    "card-33",
+    "card-33",
+    "card-34",
+    "card-35",
+    "card-36",
+    "card-37",
+    "card-38",
+    "card-39",
+    "card-40",
+    "card-40",
+    "card-41",
+    "card-42",
+    "card-43",
+    "card-44",
+    "card-45",
+    "card-46",
+    "card-46",
+    "card-47",
+    "card-47",
+    "card-48",
+    "card-49",
+    "card-49",
+    "card-50",
+    "card-51",
+    "card-52",
+    "card-53",
+    "card-18",
+    "card-54"
+   ]
+  },
+  {
+   "id": "d2",
+   "name": "Beginner",
+   "cards": [
+    "card-30",
+    "card-27",
+    "card-26",
+    "card-25",
+    "card-24",
+    "card-11",
+    "card-11",
+    "card-13",
+    "card-21",
+    "card-9",
+    "card-3",
+    "card-4",
+    "card-6",
+    "card-8",
+    "card-10",
+    "card-10",
+    "card-12",
+    "card-12",
+    "card-15",
+    "card-18",
+    "card-20",
+    "card-2",
+    "card-1",
+    "card-14",
+    "card-16",
+    "card-17",
+    "card-19",
+    "card-15",
+    "card-22",
+    "card-22",
+    "card-23",
+    "card-5",
+    "card-7",
+    "card-28",
+    "card-28",
+    "card-30",
+    "card-32",
+    "card-33",
+    "card-6",
+    "card-4",
+    "card-39",
+    "card-40",
+    "card-40",
+    "card-44",
+    "card-47",
+    "card-47",
+    "card-48",
+    "card-49",
+    "card-49",
+    "card-18",
+    "card-31",
+    "card-36",
+    "card-54"
+   ]
+  }
+ ],
+ "settings": {
+  "players": 2,
+  "planets": 5,
+  "rounds": 6,
+  "hide": false,
+  "kinds": [
+   "human",
+   "bot",
+   "bot",
+   "bot"
+  ],
+  "deckOf": [
+   "d1",
+   "d1",
+   "d2",
+   "d2"
+  ],
+  "sandbox": true
+ }
+}

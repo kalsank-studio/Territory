@@ -1,0 +1,51 @@
+type,id,name,cost,power,rarity,ability,art,notes
+card,,Coin of the Lotus,1,0,basic,Steal a random card from an opponent's hand.,🪷,
+token,,Coin of the Lotus,1,0,,Steal a random card from an opponent's hand.,🪷,"Token copy of the card, so Putrescia can create it — Create only works on tokens."
+token,,Rock,1,0,,,🪨,
+card,,Dial of the Prophet,1,1,basic,Move a card of your choice to this planet.,🧭,
+card,,Laevus,1,1,elite,Create 1 Dexter in hand.,🫲,
+card,,Contract,1,1,elite,Gain 1 Energy if the round number is at most 2. Draw a card if the round number is exactly 3. Draw a card if the round number is exactly 4. Give this card +2 Power if the round number is at least 5.,📜,
+card,,Mummy,1,2,basic,When this card is discarded: Draw a card. When this card is destroyed: Draw a card.,⚰️,
+card,,Ambrosia,2,1,basic,Give your other cards here +2 Power.,🍯,"""Two other cards here"" read as all your other cards here (you have 3 slots, so at most two). Change it if you meant any two cards, enemies included."
+card,,Felkonium,2,1,basic,Give the next card you play +2 Power.,⚗️,"Approximation: only your next card gets +2. ""Your next two cards"" isn't a mechanic yet."
+card,,Glutton,2,2,basic,"Destroy a card of your choice here, in order to give this card +3 Power. Destroy a card of your choice here, in order to give this card +3 Power.",🍖,"Two picks, +3 after each one that lands. Glutton can't pick itself; with nothing else here, that pick (and its +3) is skipped."
+card,,Medallion of Clingerman,2,2,elite,Give each card you play this round +1 Power.,🏅,
+card,,Atlas,2,3,basic,Draw a card.,🗺️,
+card,,Blade,2,4,basic,,🔪,
+card,,Reforge,2,4,basic,"Discard a card, in order to draw a card.",⚒️,
+token,,Dexter,2,5,,,🫱,
+card,,Ward,2,5,basic,Discard a card.,🛡️,
+card,,Putrescia,2,5,basic,"Destroy a card of your choice here, in order to create 1 Coin of the Lotus in hand.",🪰,"""One card here"" read as one of your own (a sacrifice). Switch the target to an enemy card if that's what you meant."
+card,,Swarm,4,1,elite,Steal up to 4 bonus Power from an enemy card of your choice here and give it to this card.,🦗,
+card,,Cloak,3,1,elite,"Draw a card, in order to summon that card here.",🧥,
+card,,Caravan,3,3,elite,Draw 2 cards.,🐪,
+card,,Darksight,3,3,basic,"Destroy your other cards here, in order to give this card Power equal to that card’s Power.",👁️,
+card,,Obelisk,3,3,basic,"Draw a card, in order to give this card Power equal to that card’s Energy cost.",🗿,"""Reveal it to your opponents"" was left out — there's no reveal mechanic. The log does name the card."
+card,,Aashi's Glasses,3,3,elite,Choose two: gain 1 Energy / draw a card / give this card +2 Power.,👓,
+card,,Catharsis,3,4,elite,Discard a random card from an opponent's hand.,🌊,
+card,,Ceramanic,3,5,basic,When this card is destroyed: Give a card of your choice here +5 Power.,🏺,
+card,,Lightspark,3,5,basic,Give the next card you play +2 Power.,💫,
+card,,Broadsword,3,6,basic,,⚔️,
+card,,Trebuchet,3,5,basic,Summon a Rock for an opponent here.,☄️,
+card,,Absolver,3,7,basic,Discard a card.,🙏,
+card,,The Corruption,3,9,elite,Destroy a card of your choice.,☣️,
+card,,Bounty,4,1,elite,Draw a card. Give this card Power equal to the number of cards in your hand.,💰,
+card,,Solariam,4,5,elite,Summon a Lunariam on a planet of your choice.,☀️,
+token,,Lunariam,4,5,,,🌙,
+card,,Zombie,5,4,exotic,"Discard a card, in order to gain Energy equal to that card’s Energy cost.",🧟,
+card,,Revenant,4,5,exotic,Whenever a card goes to the graveyard: Give this card +1 Power.,👻,
+card,,Tiamait,4,7,elite,"Discard 2 cards, in order to gain 4 Energy.",🐉,
+card,,Sahel,4,7,exotic,Move an enemy card of your choice to this planet.,🏜️,
+card,,Battleaxe,4,8,basic,,🪓,
+card,,Judgment,5,4,exotic,"Destroy a card of your choice here, in order to destroy an enemy card of your choice here.",⚖️,
+card,,Mausoleum,5,5,exotic,Destroy an enemy card of your choice (only cards with Power less than the number of cards in your hand).,🏛️,"""A card"" read as an enemy card on any planet."
+card,,Amulet of Cochrane,5,6,exotic,Summon the strongest card from the graveyard on a planet of your choice.,🧿,
+card,,Atun,5,6,exotic,Destroy an enemy card of your choice here (only cards with Power less than this card’s Power).,🌞,"""A card at this location"" read as an enemy card here."
+card,,Scythe of Mankala,5,6,exotic,Give a card of your choice Power equal to the number of cards in the graveyard.,🌾,
+card,,Krakoa,5,8,elite,Burn 0 Power from the next card you play. Give this card Power equal to that card’s Energy cost.,🦑,"""Burn 0 Power from the next card you play"" does nothing itself: it marks your next card so the second sentence can read its cost. It works, but reads oddly on the card."
+card,,Ravenheart,5,8,elite,"Discard random cards equal to the number of cards in your hand, in order to draw cards equal to the number of those cards.",🪶,
+card,,Torch,2,2,basic,Burn 2 Power from a random enemy card here.,🔥,
+card,,Firestorm,5,6,elite,Burn 2 Power from all of an opponent’s cards here.,🌋,
+card,,Flameheart,5,9,exotic,Give this card +4 Power if the strongest enemy Power here is at most 6.,❤️‍🔥,
+card,,Lightning,3,3,elite,Burn 5 Power from the strongest enemy card here.,🌩️,
+card,,Siphon,3,6,elite,Steal up to 4 bonus Power from a card of your choice and give it to this card.,🩸,"Steal only moves bonus Power, so this does nothing unless your card has some. If you meant 4 of its base Power, it would be Burn 4 from your card, then Give this card +4."

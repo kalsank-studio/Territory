@@ -1,0 +1,929 @@
+
+/* ============ TOKENS ============ */
+:root{
+  /* light (default) chrome */
+  --ui-bg:#e6ebe8;
+  --ui-bg-2:#dde4e0;
+  --ui-panel:#f4f7f5;
+  --ui-panel-2:#ffffff;
+  --ui-line:rgba(12,32,34,.14);
+  --ui-line-2:rgba(12,32,34,.28);
+  --ui-text:#0f1c1f;
+  --ui-dim:#4a5d60;
+  --ui-faint:#78888b;
+  --ui-accent:#0f7a5f;
+  --ui-accent-ink:#ffffff;
+  --shadow:0 1px 2px rgba(7,20,23,.10), 0 8px 24px rgba(7,20,23,.08);
+
+  /* board (constant across themes — the board is a window onto space) */
+  --board-bg:#071417;
+  --board-bg-2:#0a1d21;
+  --panel:rgba(255,255,255,.055);
+  --panel-2:rgba(255,255,255,.10);
+  --line:rgba(190,235,225,.14);
+  --line-2:rgba(190,235,225,.30);
+  --ink:#eaf3f0;
+  --ink-dim:#8fa5a4;
+  --ink-faint:#63797a;
+
+  /* identity */
+  --energy:#f5b95c;
+  --p1:#4fd6b0;
+  --p2:#a482f0;
+  --p3:#f2856c;
+  --p4:#5cbfe4;
+  --danger:#f0796f;
+
+  --r-s:8px; --r-m:13px; --r-l:20px;
+  --font-d:"Syne", "Trebuchet MS", sans-serif;
+  --font-b:"Outfit", "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ui-bg:#071417;
+    --ui-bg-2:#040e10;
+    --ui-panel:rgba(255,255,255,.055);
+    --ui-panel-2:rgba(255,255,255,.10);
+    --ui-line:rgba(190,235,225,.14);
+    --ui-line-2:rgba(190,235,225,.30);
+    --ui-text:#eaf3f0;
+    --ui-dim:#8fa5a4;
+    --ui-faint:#63797a;
+    --ui-accent:#4fd6b0;
+    --ui-accent-ink:#04211b;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --ui-bg:#071417;
+  --ui-bg-2:#040e10;
+  --ui-panel:rgba(255,255,255,.055);
+  --ui-panel-2:rgba(255,255,255,.10);
+  --ui-line:rgba(190,235,225,.14);
+  --ui-line-2:rgba(190,235,225,.30);
+  --ui-text:#eaf3f0;
+  --ui-dim:#8fa5a4;
+  --ui-faint:#63797a;
+  --ui-accent:#4fd6b0;
+  --ui-accent-ink:#04211b;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+}
+
+/* ============ BASE ============ */
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0; background:var(--ui-bg); color:var(--ui-text);
+  font-family:var(--font-b); font-size:15px; line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+  overscroll-behavior:none;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:none;background:none}
+:focus-visible{outline:2px solid var(--ui-accent); outline-offset:2px; border-radius:4px}
+h1,h2,h3{font-family:var(--font-d); font-weight:700; margin:0; letter-spacing:-.02em}
+img{max-width:100%}
+::-webkit-scrollbar{height:6px;width:6px}
+::-webkit-scrollbar-thumb{background:var(--ui-line-2);border-radius:99px}
+@media (prefers-reduced-motion: reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important}}
+
+#app{min-height:100dvh;display:flex;flex-direction:column}
+
+/* ============ GENERIC UI ============ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:11px 18px;border-radius:99px;background:var(--ui-panel);
+  border:1px solid var(--ui-line); font-weight:500; color:inherit;
+  transition:transform .12s ease, background .15s ease, border-color .15s ease;
+}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--ui-accent);color:var(--ui-accent-ink);border-color:transparent;font-weight:600}
+.btn.ghost{background:transparent}
+.btn.sm{padding:7px 13px;font-size:13.5px}
+.btn.wide{width:100%}
+.btn[disabled]{opacity:.4;pointer-events:none}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field > span{font-size:12.5px;color:var(--ui-dim)}
+input[type=text],input[type=number],select,textarea{
+  background:var(--ui-panel-2);border:1px solid var(--ui-line);border-radius:var(--r-s);
+  padding:9px 11px;width:100%;min-width:0;
+}
+textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;resize:vertical}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.muted{color:var(--ui-dim)}
+.tiny{font-size:12.5px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.card-panel{background:var(--ui-panel);border:1px solid var(--ui-line);border-radius:var(--r-m);padding:14px}
+
+/* ============ TITLE SCREEN ============ */
+.title-wrap{
+  flex:1;display:flex;flex-direction:column;justify-content:center;
+  padding:32px 22px calc(32px + env(safe-area-inset-bottom));gap:26px;
+  background:
+    radial-gradient(58% 40% at 22% 14%, rgba(79,214,176,.20), transparent 70%),
+    radial-gradient(52% 36% at 84% 30%, rgba(164,130,240,.20), transparent 70%),
+    radial-gradient(70% 50% at 50% 108%, rgba(245,185,92,.12), transparent 70%),
+    linear-gradient(#040e10,#071417);
+  color:var(--ink);
+  position:relative;overflow:hidden;
+}
+.starfield{position:absolute;inset:0;opacity:.5;pointer-events:none}
+.title-inner{position:relative;max-width:560px;width:100%;margin:0 auto}
+.wordmark{font-family:var(--font-d);font-weight:800;font-size:clamp(46px,15vw,86px);line-height:.92;letter-spacing:-.045em}
+.wordmark em{font-style:normal;display:block;color:var(--p1)}
+.tagline{color:var(--ink-dim);max-width:34ch;margin-top:14px;font-weight:300;font-size:16.5px}
+.orbit-row{display:flex;gap:10px;margin:26px 0 6px;align-items:flex-end}
+.orbit{width:34px;height:34px;border-radius:50%;background:radial-gradient(circle at 32% 28%, rgba(255,255,255,.55), transparent 55%), var(--o,#2b4a4a);box-shadow:0 0 0 1px rgba(255,255,255,.12), 0 0 18px -4px var(--o,#2b4a4a)}
+.orbit:nth-child(2){width:22px;height:22px}
+.orbit:nth-child(3){width:44px;height:44px}
+.orbit:nth-child(4){width:16px;height:16px}
+.orbit:nth-child(5){width:28px;height:28px}
+.title-actions{display:flex;flex-direction:column;gap:9px;position:relative;margin-top:8px}
+.title-actions .btn{background:rgba(255,255,255,.07);border-color:var(--line);color:var(--ink);justify-content:flex-start;padding:14px 20px}
+.title-actions .btn.primary{background:var(--p1);color:#04211b;border-color:transparent}
+.title-actions .btn .k{margin-left:auto;color:var(--ink-faint);font-size:13px}
+.title-actions .btn.primary .k{color:rgba(4,33,27,.6)}
+
+/* ============ SUBPAGE CHROME ============ */
+.topbar{
+  display:flex;align-items:center;gap:12px;padding:12px 16px;
+  padding-top:calc(12px + env(safe-area-inset-top));
+  border-bottom:1px solid var(--ui-line);background:var(--ui-bg);
+  position:sticky;top:0;z-index:20;
+}
+.topbar h2{font-size:19px}
+.topbar .spacer{flex:1}
+/* The top bar sits on the page chrome, not on the board, so its buttons use
+   the chrome's tokens — the board's near-white ink vanishes on a light page. */
+.topbar .icon-btn{background:var(--ui-panel-2);border:1px solid var(--ui-line-2);color:var(--ui-text)}
+.topbar .back-btn{
+  display:inline-flex;align-items:center;gap:6px;flex:none;
+  height:36px;padding:0 14px 0 11px;border-radius:99px;
+  background:var(--ui-accent);color:var(--ui-accent-ink);border:none;
+  font-weight:600;font-size:14px;box-shadow:var(--shadow);
+}
+.topbar .back-btn .arr{font-size:17px;line-height:1}
+.topbar .back-btn:focus-visible{outline:2px solid var(--ui-text);outline-offset:2px}
+.page{padding:18px 16px calc(28px + env(safe-area-inset-bottom));max-width:900px;margin:0 auto;width:100%;flex:1}
+.section-head{display:flex;align-items:baseline;gap:10px;margin:22px 0 10px}
+.section-head h3{font-size:16px}
+.section-head p{margin:0;font-size:13px;color:var(--ui-dim)}
+
+/* ============ BOARD ============ */
+.board{
+  flex:1;display:flex;flex-direction:column;min-height:100dvh;
+  background:
+    radial-gradient(60% 34% at 18% 8%, rgba(79,214,176,.13), transparent 72%),
+    radial-gradient(56% 32% at 88% 26%, rgba(164,130,240,.14), transparent 72%),
+    linear-gradient(var(--board-bg-2),var(--board-bg));
+  color:var(--ink);
+}
+.hud{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;
+  padding-top:calc(10px + env(safe-area-inset-top));
+  border-bottom:1px solid var(--line);backdrop-filter:blur(8px);
+  position:sticky;top:0;z-index:14;background:rgba(7,20,23,.72);
+}
+.hud .round{font-family:var(--font-d);font-weight:700;font-size:15px;letter-spacing:-.01em}
+.hud .phase{font-size:12.5px;color:var(--ink-dim)}
+.hud .spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:99px;background:var(--panel);border:1px solid var(--line);font-size:13px;font-weight:500}
+.pill.energy{color:var(--energy);border-color:color-mix(in srgb,var(--energy) 35%,transparent)}
+.icon-btn{width:34px;height:34px;border-radius:50%;background:var(--panel);border:1px solid var(--line);display:grid;place-items:center;color:var(--ink);font-size:15px}
+
+.turnbar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:13.5px;background:rgba(255,255,255,.03)}
+.turnbar.waiting{background:rgba(255,255,255,.015)}
+.turnbar.waiting b{color:var(--ink-dim);font-weight:600}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--pc,var(--p1));box-shadow:0 0 10px -1px var(--pc,var(--p1));flex:none}
+.turnbar.waiting .dot{animation:thinking 1.4s ease-in-out infinite}
+@keyframes thinking{0%,100%{opacity:.35}50%{opacity:1}}
+
+.strip{
+  flex:1;display:flex;gap:12px;overflow-x:auto;overflow-y:auto;
+  padding:14px 12px 12px;scroll-snap-type:x proximity;align-items:flex-start;
+}
+.planet{
+  flex:none;width:212px;scroll-snap-align:center;
+  border:1px solid var(--line);border-radius:var(--r-l);
+  background:linear-gradient(rgba(255,255,255,.05),rgba(255,255,255,.015));
+  padding:10px;display:flex;flex-direction:column;gap:9px;
+}
+.planet.hot{border-color:var(--line-2);box-shadow:0 0 0 1px var(--line-2), 0 0 40px -18px var(--p1)}
+.planet-head{display:flex;align-items:center;gap:9px}
+.orb{
+  width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:19px;
+  background:radial-gradient(circle at 32% 28%, rgba(255,255,255,.4), transparent 58%), var(--po,#22403f);
+  box-shadow:0 0 0 1px rgba(255,255,255,.14), 0 0 22px -6px var(--po,#22403f);
+  overflow:hidden;
+}
+.orb img{width:100%;height:100%;object-fit:cover}
+.planet-name{font-family:var(--font-d);font-weight:700;font-size:14.5px;line-height:1.15;letter-spacing:-.01em}
+.planet-sub{font-size:11.5px;color:var(--ink-faint)}
+.tally{display:flex;flex-direction:column;gap:3px;margin-top:1px}
+.tally-row{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-dim)}
+.bar{flex:1;height:4px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--pc);border-radius:99px;transition:width .35s ease}
+.tally-row b{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600;min-width:16px;text-align:right}
+.tally-row.lead b{color:var(--pc)}
+.crown{color:var(--pc)}
+
+.side{display:flex;flex-direction:column;gap:5px;transition:opacity .18s ease}
+.side-label{font-size:11px;color:var(--ink-faint);display:flex;align-items:center;gap:5px}
+.side-label.you{color:var(--ink-dim)}
+.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+
+/* The slot rule sits on top of the slot like a lid, and stays there once a
+   card lands. Shared border radius reads as one object, not two. */
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:-2px}
+.rule{
+  border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 2px 2px;
+  background:rgba(255,255,255,.05);padding:3px 2px 5px;
+  display:flex;flex-direction:column;align-items:center;line-height:1.1;
+  transition:background .16s ease, border-color .16s ease, opacity .16s ease;
+}
+.rule .cond{font-size:9px;color:var(--ink-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rule .rew{font-size:10.5px;font-weight:700;color:var(--energy);white-space:nowrap}
+.rule .rew.draw{color:var(--p2)}
+.rule.match{background:color-mix(in srgb,var(--p1) 20%,transparent);border-color:color-mix(in srgb,var(--p1) 55%,transparent)}
+.rule.match .cond{color:var(--p1)}
+.rule.miss{opacity:.4}
+
+.slot{
+  position:relative;aspect-ratio:2/3;border-radius:3px 3px 9px 9px;
+  border:1px dashed var(--line);background:rgba(255,255,255,.025);
+  display:flex;align-items:center;justify-content:center;
+  padding:0;overflow:hidden;transition:border-color .15s, background .15s, transform .15s, box-shadow .15s;
+}
+.slot.filled{border-style:solid;border-color:transparent;background:none}
+.slot-mark{font-size:15px;color:var(--ink-faint);font-weight:300}
+.slot.open{cursor:pointer}
+.slot.open.plain{border-color:var(--line-2);background:rgba(255,255,255,.05)}
+.slot.open.match{border-style:solid;border-color:color-mix(in srgb,var(--p1) 70%,transparent);background:rgba(79,214,176,.12)}
+.slot.open.match .slot-mark{color:var(--p1)}
+.slot.drop-hot{transform:scale(1.07);border-style:solid;border-color:var(--p1);
+  background:rgba(79,214,176,.2);box-shadow:0 0 0 2px var(--p1),0 0 26px -8px var(--p1)}
+.slot.filled.match{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--p1) 60%,transparent)}
+.slot.filled.plain{box-shadow:0 0 0 1px var(--line-2)}
+.slot.is-source,.card.is-source{opacity:.3}
+.slot.movable{cursor:grab}
+.slot.blocked{opacity:.3}
+.planet.drop-hot{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--p1) 60%,transparent)}
+.slot[data-drag]{touch-action:none}
+/* iOS will otherwise start a text selection or a callout mid-drag */
+.slot,.card,.mini,.pip{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.hand.drop-hot{box-shadow:inset 0 0 0 2px var(--p1);border-radius:12px}
+
+.mini{
+  position:absolute;inset:0;border-radius:9px;overflow:hidden;
+  background:linear-gradient(160deg,#12262a,#0a1a1d);
+  border:1px solid color-mix(in srgb,var(--pc) 55%,transparent);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  box-shadow:0 2px 10px rgba(0,0,0,.4), inset 0 0 22px -14px var(--pc);
+}
+.mini .art{font-size:28px;line-height:1;filter:saturate(1.1)}
+.mini .art img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0;opacity:.85}
+.mini .nm{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:8px;color:var(--ink-dim);padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:2;text-shadow:0 1px 3px rgba(0,0,0,.85)}
+.mini .c,.mini .p{position:absolute;top:2px;z-index:3;font-size:13px;font-weight:800;line-height:1;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.mini .c{left:2px;background:color-mix(in srgb,var(--energy) 88%,#000);color:#2b1a02}
+.mini .p{right:2px;background:#e9f5f0;color:#082022}
+.mini .p.buffed{background:var(--p1);color:#04211b}
+.mini .p.nerfed{background:var(--danger);color:#2b0a08}
+/* ---- the back of a card ---- */
+.mini.back{
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb,var(--pc) 26%,transparent), transparent 64%),
+    repeating-linear-gradient(135deg,rgba(255,255,255,.045) 0 3px,transparent 3px 7px),
+    linear-gradient(160deg,#123033,#0a1b1e);
+  border-color:color-mix(in srgb,var(--pc) 42%,transparent);
+}
+.mini.back .rings{position:absolute;inset:7px 5px;border-radius:50%;
+  border:1px solid color-mix(in srgb,var(--pc) 40%,transparent);opacity:.8}
+.mini.back .rings::after{content:"";position:absolute;inset:4px;border-radius:50%;
+  border:1px dashed color-mix(in srgb,var(--pc) 34%,transparent)}
+.mini.back .sigil{font-size:12px;z-index:2;color:color-mix(in srgb,var(--pc) 75%,#ffffff);
+  text-shadow:0 0 14px color-mix(in srgb,var(--pc) 70%,transparent)}
+.mini.back .c{opacity:.9}
+.mini.flippable{cursor:pointer;box-shadow:0 0 0 2px var(--pc), 0 0 24px -6px var(--pc);animation:bob 1.8s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+
+/* ---- turning over ---- */
+.flipper{position:absolute;inset:0;perspective:760px}
+.flip-inner{position:relative;width:100%;height:100%;transform-style:preserve-3d;
+  transition:transform .46s cubic-bezier(.45,.05,.25,1)}
+.flipper.is-flipped .flip-inner{transform:rotateY(180deg)}
+.flip-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.flip-face.ff{transform:rotateY(180deg)}
+.mini.justflipped{animation:landed .5s ease}
+@keyframes landed{0%{box-shadow:0 0 0 2px var(--pc),0 0 30px -4px var(--pc)}100%{box-shadow:0 2px 10px rgba(0,0,0,.4)}}
+.mini.met{outline:1.5px solid color-mix(in srgb,var(--energy) 70%,transparent);outline-offset:-1px}
+
+/* ---- committed, not yet revealed ---- */
+.mini.pending{border-style:dashed;opacity:.94}
+.mini .pinned{position:absolute;top:24px;left:50%;transform:translateX(-50%);z-index:3;
+  font-size:7px;letter-spacing:.03em;padding:0 4px;border-radius:5px;
+  background:rgba(255,255,255,.16);color:var(--ink-dim)}
+.mini.peeking{opacity:.88;outline:1px dashed color-mix(in srgb,var(--pc) 65%,transparent);outline-offset:-2px}
+.slot .harvest{position:absolute;bottom:-1px;right:-1px;font-size:8.5px;background:var(--energy);color:#2b1a02;padding:0 3px;border-radius:6px 0 8px 0;font-weight:700;z-index:2}
+.slot .harvest.draw{background:var(--p2);color:#150a2b}
+
+/* ============ THE BOTTOM CLUSTER ============ */
+.tray{
+  position:sticky;bottom:0;z-index:12;border-top:1px solid var(--line);
+  background:linear-gradient(rgba(7,20,23,.72),rgba(7,20,23,.96));backdrop-filter:blur(10px);
+  padding:0 0 calc(9px + env(safe-area-inset-bottom));
+}
+.tray-head{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12.5px;color:var(--ink-dim)}
+.tray-head .spend{color:var(--energy)}
+.tray-head .tray-title{color:var(--ink);font-weight:600}
+
+/* Where you stand, on every planet, without leaving the board */
+.rail{display:flex;align-items:center;gap:10px;padding:7px 12px 6px;border-bottom:1px solid var(--line)}
+.rail-who{display:flex;align-items:center;gap:6px;flex:none;font-size:12px;color:var(--ink-dim)}
+.rail-who b{font-family:var(--font-d);font-size:13px;color:var(--ink);letter-spacing:-.01em}
+.rail-count{color:var(--ink-dim);white-space:nowrap}
+.rail-count b{font-family:var(--font-d);font-size:14px;color:var(--pc)}
+.rail-pips{display:flex;gap:5px;overflow-x:auto;flex:1;padding-bottom:1px;scrollbar-width:none}
+.rail-pips::-webkit-scrollbar{display:none}
+.pip{flex:none;display:flex;align-items:center;gap:5px;padding:2px 8px 2px 2px;border-radius:99px;
+  border:1px solid var(--line);background:rgba(255,255,255,.04);transition:background .2s,border-color .2s,opacity .2s}
+.pip-orb{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px;overflow:hidden;
+  background:radial-gradient(circle at 32% 28%, rgba(255,255,255,.4), transparent 58%), var(--po,#22403f)}
+.pip-orb img{width:100%;height:100%;object-fit:cover}
+.pip-num{font-size:11px;font-variant-numeric:tabular-nums;display:flex;gap:3px;color:var(--ink-faint)}
+.pip-num b{color:var(--ink);font-weight:700}
+.pip-num i{font-style:normal}
+.pip-num i::before{content:"\2013";margin-right:3px;opacity:.5}
+.pip.win{border-color:color-mix(in srgb,var(--pc) 55%,transparent);background:color-mix(in srgb,var(--pc) 14%,transparent)}
+.pip.win .pip-num b{color:var(--pc)}
+.pip.lose{opacity:.6}
+
+/* Dragging: the board recedes so the legal landing places stand out */
+body.dragging{cursor:grabbing}
+body.dragging .planet-head,body.dragging .tally,body.dragging .side:not(.mine),
+body.dragging .tray-head,body.dragging .rail{opacity:.35}
+.drag-ghost{position:fixed;z-index:95;pointer-events:none;
+  transform:translate(-50%,-58%) rotate(-4deg) scale(1.06);
+  filter:drop-shadow(0 16px 26px rgba(0,0,0,.6))}
+.drag-ghost .card{width:96px;opacity:.97}
+.planet.ping{animation:ping .7s ease}
+@keyframes ping{0%,100%{box-shadow:none}40%{box-shadow:0 0 0 2px var(--p1),0 0 40px -10px var(--p1)}}
+
+/* ============ HAND ============ */
+.hand{display:flex;gap:8px;overflow-x:auto;padding:2px 12px 4px;align-items:flex-end}
+.card{
+  /* Every card is 2:3, in hand, in sheets and in the studio — the same shape as a slot. */
+  flex:none;width:88px;aspect-ratio:2/3;overflow:hidden;border-radius:var(--r-m);padding:6px 6px 6px;text-align:left;
+  background:linear-gradient(165deg,#163034,#0c2024);
+  border:1px solid var(--line);color:var(--ink);position:relative;
+  transition:transform .16s ease, box-shadow .16s ease, border-color .16s;
+  display:flex;flex-direction:column;gap:4px;
+}
+.card:active{transform:translateY(-2px)}
+.card[data-drag]{touch-action:pan-x}
+.card.sel{transform:translateY(-10px);border-color:var(--pc);box-shadow:0 0 0 1.5px var(--pc),0 10px 26px -10px var(--pc)}
+.card.unaffordable{opacity:.42}
+.card.facedown{background:
+  radial-gradient(circle at 50% 42%, color-mix(in srgb,var(--pc) 24%,transparent), transparent 62%),
+  repeating-linear-gradient(135deg,rgba(255,255,255,.045) 0 3px,transparent 3px 7px),
+  linear-gradient(160deg,#123033,#0a1b1e)}
+.card.facedown .art{color:color-mix(in srgb,var(--pc) 75%,#fff)}
+.card .top{display:flex;justify-content:space-between;align-items:flex-start}
+/* Cost and Power: circles, big enough to read across a table. */
+.badge{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:15px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.card.big .badge{width:32px;height:32px;font-size:19px}
+.badge.e{background:color-mix(in srgb,var(--energy) 88%,#000);color:#2b1a02}
+.badge.p{background:#e9f5f0;color:#082022}
+.card .art{height:46px;flex:none;display:grid;place-items:center;font-size:33px;position:relative;border-radius:7px;overflow:hidden;background:rgba(255,255,255,.04)}
+.card .art img{width:100%;height:100%;object-fit:cover}
+.card .nm{font-size:10.5px;font-weight:600;line-height:1.15;letter-spacing:-.01em}
+.card .tx{font-size:9px;color:var(--ink-dim);line-height:1.25;flex:1 1 0;min-height:0;overflow:hidden;
+  -webkit-mask-image:linear-gradient(to bottom,#000 78%,transparent);mask-image:linear-gradient(to bottom,#000 78%,transparent)}
+.card.big{width:150px}
+.card.big .art{height:84px;font-size:58px}
+.card.big .nm{font-size:13px}
+.card.big .tx{font-size:11px}
+
+.empty-note{padding:18px 12px;color:var(--ink-faint);font-size:13.5px;text-align:center}
+
+/* ============ THE BEAT BETWEEN PHASES ============
+   A bar drops in over the top of the board naming who is up and what happens
+   next. The board stays visible underneath, held for the second it lasts. */
+.beat{
+  position:fixed;top:0;left:0;right:0;z-index:60;
+  display:flex;align-items:center;gap:10px;
+  padding:9px 14px 10px;padding-top:calc(9px + env(safe-area-inset-top));
+  background:linear-gradient(rgba(9,26,29,.98),rgba(7,20,23,.93));
+  border-bottom:1px solid var(--line);
+  box-shadow:inset 3px 0 0 var(--pc,var(--p1)), 0 12px 30px -14px rgba(0,0,0,.9);
+  color:var(--ink);backdrop-filter:blur(8px);
+  animation:beatDrop .26s cubic-bezier(.2,.85,.3,1);
+}
+@keyframes beatDrop{from{transform:translateY(-101%)}to{transform:none}}
+.beat-text{min-width:0}
+.beat-title{font-family:var(--font-d);font-weight:700;font-size:16px;letter-spacing:-.015em;line-height:1.2}
+.beat-sub{color:var(--ink-dim);font-size:12.5px;line-height:1.3}
+.beat-bar{position:absolute;left:0;right:0;bottom:0;height:2px}
+.beat-bar i{display:block;width:100%;height:100%;background:var(--pc,var(--p1));transform-origin:left;animation:beatFill 1s linear forwards}
+@keyframes beatFill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.board.is-holding .strip,.board.is-holding .tray,.board.is-holding .hud,.board.is-holding .turnbar{
+  pointer-events:none;filter:saturate(.8) brightness(.86);transition:filter .2s ease}
+
+/* ============ REVIEWING THE FINAL BOARD ============ */
+.seatbar{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);overflow-x:auto}
+.board .chip{background:var(--panel);border-color:var(--line);color:var(--ink);display:flex;align-items:center;gap:6px;flex:none;padding:5px 11px}
+.board .chip.on{background:color-mix(in srgb,var(--pc) 20%,transparent);border-color:var(--pc);color:var(--ink)}
+.turnhint{color:var(--ink-dim);font-size:12.5px}
+.pill .planned{opacity:.6}
+
+/* ============ OVERLAYS ============ */
+.veil{
+  position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:16px;padding:28px;text-align:center;
+  background:linear-gradient(rgba(4,14,16,.96),rgba(7,20,23,.99));color:var(--ink);
+  backdrop-filter:blur(14px);
+}
+.veil h2{font-size:clamp(26px,7vw,38px)}
+.veil p{color:var(--ink-dim);max-width:32ch;margin:0}
+.veil .who{display:flex;align-items:center;gap:10px;font-family:var(--font-d);font-size:20px;font-weight:700}
+.sheet{
+  position:fixed;inset:auto 0 0 0;z-index:70;max-height:82dvh;overflow:auto;
+  background:var(--ui-bg);border-top:1px solid var(--ui-line);border-radius:var(--r-l) var(--r-l) 0 0;
+  padding:16px 16px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -14px 40px rgba(0,0,0,.35);
+  animation:up .22s ease;
+}
+@keyframes up{from{transform:translateY(18px);opacity:.4}to{transform:none;opacity:1}}
+.scrim{position:fixed;inset:0;z-index:65;background:rgba(4,14,16,.6)}
+.sheet-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.sheet-head h3{font-size:17px;flex:1}
+
+.log{font-size:12.5px;line-height:1.55;color:var(--ui-dim);display:flex;flex-direction:column-reverse;gap:2px;max-height:50dvh;overflow:auto}
+.log b{color:var(--ui-text);font-weight:600}
+.log .rd{color:var(--ui-faint);margin-top:8px;font-family:var(--font-d);font-size:11.5px}
+
+/* ============ RESULTS ============ */
+.result-hero{padding:26px 18px;text-align:center;background:linear-gradient(var(--board-bg-2),transparent);color:var(--ink)}
+.result-hero .who{font-family:var(--font-d);font-size:clamp(28px,9vw,44px);font-weight:800;letter-spacing:-.03em;color:var(--pc)}
+.score-line{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ui-line);font-size:14px}
+.score-line .pl{flex:1;font-weight:600}
+.score-line .vs{font-variant-numeric:tabular-nums;color:var(--ui-dim)}
+.score-line .win{font-weight:700}
+
+/* ============ STUDIO ============ */
+.list{display:flex;flex-direction:column;border:1px solid var(--ui-line);border-radius:var(--r-m);overflow:hidden}
+.list-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--ui-line);background:var(--ui-panel);text-align:left;width:100%}
+.list-item:last-child{border-bottom:none}
+.list-item.on{background:color-mix(in srgb,var(--ui-accent) 16%,transparent)}
+.list-item .thumb{width:32px;height:32px;border-radius:7px;display:grid;place-items:center;font-size:17px;background:var(--ui-panel-2);border:1px solid var(--ui-line);flex:none;overflow:hidden}
+.list-item .thumb img{width:100%;height:100%;object-fit:cover}
+.list-item .nm{flex:1;font-weight:500;font-size:14px;min-width:0}
+.list-item .nm small{display:block;color:var(--ui-dim);font-weight:400;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list-item .stat{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--ui-dim);flex:none}
+.chip{padding:3px 9px;border-radius:99px;border:1px solid var(--ui-line);font-size:12px;background:var(--ui-panel)}
+.chip.on{background:var(--ui-accent);color:var(--ui-accent-ink);border-color:transparent}
+.fx-row{border:1px solid var(--ui-line);border-radius:var(--r-s);padding:9px;background:var(--ui-panel);margin-bottom:8px}
+.fx-row-fields{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.fx-row-fields .field{min-width:112px;flex:1 1 112px}
+.fx-row-fields .btn{flex:none;align-self:flex-end}
+.fx-row-fields .field.narrow{flex:0 1 84px;min-width:70px}
+/* The effect, as it will read on the card, above the fields that build it */
+.fx-row-say{font-size:13px;font-weight:500;margin:0 0 8px;padding-left:9px;border-left:2px solid var(--ui-accent);color:var(--ui-text)}
+.field.check{flex-direction:row;align-items:center;gap:7px;margin-top:8px;font-size:12.5px;color:var(--ui-dim)}
+.field.check input{flex:none}
+.field.check span{font-size:12.5px;color:var(--ui-dim)}
+.slot-edit{border:1px solid var(--ui-line);border-radius:var(--r-s);padding:9px;background:var(--ui-panel)}
+.slot-edit > .lbl{font-size:12px;color:var(--ui-dim);margin-bottom:6px}
+.preview-wrap{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.deck-count{font-family:var(--font-d);font-weight:700;font-size:15px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.callout{border-left:3px solid var(--ui-accent);padding:8px 0 8px 12px;color:var(--ui-dim);font-size:13.5px}
+
+/* ---- importing a table of cards ---- */
+.flagdot{font-size:10.5px;font-weight:600;padding:0 6px;border-radius:99px;
+  background:color-mix(in srgb,var(--energy) 30%,transparent);
+  border:1px solid color-mix(in srgb,var(--energy) 55%,transparent);color:var(--ui-text)}
+.imp-list{display:flex;flex-direction:column;border:1px solid var(--ui-line);border-radius:var(--r-m);overflow:hidden}
+.imp{border-bottom:1px solid var(--ui-line);background:var(--ui-panel);padding:9px 12px}
+.imp:last-child{border-bottom:none}
+.imp.flagged{background:color-mix(in srgb,var(--energy) 9%,var(--ui-panel));
+  box-shadow:inset 3px 0 0 color-mix(in srgb,var(--energy) 70%,transparent)}
+.imp.skipped{opacity:.42}
+.imp-head{display:flex;align-items:center;gap:10px}
+.imp-art{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;font-size:16px;flex:none;
+  background:var(--ui-panel-2);border:1px solid var(--ui-line);overflow:hidden}
+.imp-art img{width:100%;height:100%;object-fit:cover}
+.imp-name{flex:1;min-width:0;font-weight:500;font-size:14px}
+.imp-name small{display:block;color:var(--ui-dim);font-weight:400;font-size:11.5px}
+.imp-state{font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:99px;flex:none}
+.imp-state.ok{color:var(--ui-accent);border:1px solid color-mix(in srgb,var(--ui-accent) 45%,transparent)}
+.imp-state.warn{color:var(--ui-text);background:color-mix(in srgb,var(--energy) 28%,transparent);
+  border:1px solid color-mix(in srgb,var(--energy) 55%,transparent)}
+.imp-issues{margin:7px 0 0;padding-left:18px;font-size:12.5px;color:var(--ui-dim);line-height:1.45}
+.imp-raw{margin-top:5px;font-size:12px;color:var(--ui-faint);font-style:italic}
+.review-note{border:1px solid color-mix(in srgb,var(--energy) 45%,transparent);border-radius:var(--r-s);
+  padding:10px 12px;background:color-mix(in srgb,var(--energy) 10%,transparent)}
+.review-head{display:flex;align-items:center;gap:10px}
+.review-head b{flex:1;font-size:13.5px}
+.review-note ul{margin:7px 0;padding-left:18px;font-size:12.5px;color:var(--ui-dim);line-height:1.45}
+.kbd{font-family:ui-monospace,monospace;font-size:11.5px;background:var(--ui-panel-2);border:1px solid var(--ui-line);padding:1px 5px;border-radius:5px}
+
+@media (min-width:760px){
+  .planet{width:236px}
+  .card{width:100px}
+  body{font-size:15.5px}
+}
+
+/* ---- choosing a planet for Move ---- */
+.planet-pick{justify-content:flex-start;gap:10px;width:100%}
+.planet-pick .orb{flex:none}
+
+/* ---- the graveyard button carries its count ---- */
+.grave-btn{position:relative}
+.grave-btn .count{position:absolute;top:-4px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:99px;
+  background:var(--ink);color:var(--board-bg);font-size:10.5px;font-weight:700;line-height:17px;text-align:center}
+
+/* ============ RARITY ============
+   The outline is the rarity channel, and only the rarity channel: ownership
+   stays in the card's tint and its row, so the two never compete. Elite and
+   Exotic are pushed away from the P1 mint and P2 violet (lime, hot orchid) and
+   Exotic adds motion, so the cue survives even next to a same-hued player. */
+:root{ --rar-basic:rgba(238,248,244,.62); --rar-elite:#9be15d; --rar-exotic:#e07bff; --rar-token:#4b5357; }
+[data-rarity="token"]{--rc:var(--rar-token)}
+[data-rarity="basic"]{--rc:var(--rar-basic)}
+[data-rarity="elite"]{--rc:var(--rar-elite)}
+[data-rarity="exotic"]{--rc:var(--rar-exotic)}
+.card[data-rarity]{border:3px solid var(--rc)}
+.card[data-rarity].sel{border-color:var(--rc);box-shadow:0 0 0 2px var(--pc),0 10px 26px -10px var(--pc)}
+.mini[data-rarity]{border:2.5px solid var(--rc)}
+.mini[data-rarity].pending{border-style:dashed}
+.card[data-rarity="exotic"],.mini[data-rarity="exotic"]{animation:exotic 2.6s ease-in-out infinite}
+.mini.flippable[data-rarity="exotic"]{animation:bob 1.8s ease-in-out infinite}
+@keyframes exotic{
+  0%,100%{box-shadow:0 0 0 1px color-mix(in srgb,var(--rar-exotic) 40%,transparent), 0 0 16px 1px color-mix(in srgb,var(--rar-exotic) 70%,transparent), inset 0 0 18px -6px var(--rar-exotic)}
+  50%    {box-shadow:0 0 0 2px color-mix(in srgb,var(--rar-exotic) 70%,transparent), 0 0 32px 6px color-mix(in srgb,var(--rar-exotic) 85%,transparent), inset 0 0 26px -4px var(--rar-exotic)}
+}
+
+.card[data-rarity="exotic"].sel{animation:none;box-shadow:0 0 0 2px var(--pc),0 0 22px -2px var(--rar-exotic)}
+.rar-dot{display:inline-block;width:9px;height:9px;border-radius:50%;border:2px solid var(--rc);flex:none}
+.rar-dot[data-rarity="exotic"]{box-shadow:0 0 8px var(--rar-exotic)}
+
+/* Power below what's printed: a red circle; above it: the buff colour. */
+.badge.p.nerfed{background:var(--danger);color:#2b0a08}
+.badge.p.buffed{background:var(--p1);color:#04211b}
+
+/* ============ CHOOSE N ============ */
+.mode-opt{justify-content:flex-start;gap:10px;width:100%;text-align:left}
+.mode-opt .mode-tick{flex:none;width:20px;height:20px;border-radius:6px;border:1.5px solid var(--ui-line-2);display:grid;place-items:center;font-size:13px}
+.mode-opt.on{border-color:var(--ui-accent);background:color-mix(in srgb,var(--ui-accent) 14%,var(--ui-panel))}
+.mode-opt.on .mode-tick{background:var(--ui-accent);border-color:var(--ui-accent);color:var(--ui-accent-ink)}
+.mode-opt:disabled{opacity:.45}
+
+/* ============ SANDBOX ============ */
+.sb-btn{border-color:color-mix(in srgb,var(--energy) 55%,transparent)}
+.sb-sheet .sb-group{border:1px solid var(--ui-line);border-radius:var(--r-m);padding:10px 12px;margin-bottom:10px;background:var(--ui-panel)}
+.sb-sheet .sb-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ui-faint);margin-bottom:8px;font-weight:600}
+.sb-row{display:flex;align-items:center;gap:6px;padding:4px 0;flex-wrap:wrap}
+.sb-row .pill.energy{font-size:12px}
+.sb-search{flex:1;min-width:140px}
+.sb-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:8px;max-height:30dvh;overflow:auto;padding:2px}
+.sb-card{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--r-s);background:var(--ui-panel-2);border:1.5px solid var(--rc,var(--ui-line));color:var(--ui-text);font-size:12.5px;text-align:left}
+.sb-card[hidden]{display:none}
+.sb-card .badge{width:18px;height:18px;font-size:11px;flex:none}
+.sb-card .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-card:active{transform:scale(.97)}
+:root:not([data-theme="dark"]) .sb-card[data-rarity="basic"]{--rc:var(--ui-line-2)}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .sb-card[data-rarity="basic"]{--rc:var(--rar-basic)} }
+
+/* Studio: the condition/filter strip reads as a quieter second line of the
+   same effect (proximity + a dashed rule), and Choose's options nest inside
+   their parent with an indent and a left rail (common region). */
+.fx-gates{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:8px;padding-top:8px;border-top:1px dashed var(--ui-line)}
+.fx-gates .field{min-width:104px;flex:1 1 104px}
+.fx-gates .field.narrow{flex:0 1 84px;min-width:70px}
+.fx-gates .field span{color:var(--ui-faint)}
+.fx-opts{margin:10px 0 2px 6px;padding-left:10px;border-left:2px solid color-mix(in srgb,var(--ui-accent) 45%,transparent)}
+.fx-row.fx-opt{background:var(--ui-panel-2)}
+.fx-row.fx-opt .fx-row-say{border-left-color:var(--ui-line-2)}
+.sb-sheet .pill.energy{color:color-mix(in srgb,var(--energy) 55%,var(--ui-text));background:var(--ui-panel-2);border-color:color-mix(in srgb,var(--energy) 45%,transparent)}
+
+/* ============ IMPORT & EXPORT ============
+   Each exportable file is one tile (common region) with its actions on the
+   right, in the same place every time, so the three read as one set. */
+.io-files{display:flex;flex-direction:column;gap:8px}
+.io-file{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--ui-line);border-radius:var(--r-m);background:var(--ui-panel)}
+.io-ico{font-size:20px;width:30px;text-align:center;flex:none}
+.io-nm{flex:1;min-width:0;font-weight:600;font-size:14px}
+.io-nm small{display:block;font-weight:400;font-size:12px;color:var(--ui-dim);margin-top:1px}
+.io-box{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;white-space:pre;overflow:auto}
+.io-help summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--ui-dim);padding:2px 0}
+.io-help[open] summary{color:var(--ui-text)}
+.io-help p{margin:6px 0 2px}
+.imp-state.upd{color:var(--ui-text);border:1px solid var(--ui-line-2);background:var(--ui-panel-2)}
+@media (max-width:420px){ .io-file{flex-wrap:wrap} .io-nm{flex-basis:calc(100% - 40px)} }
+.io-check{display:flex;align-items:flex-start;gap:9px}
+.io-check input{width:auto;flex:none;margin-top:2px}
+.io-check span{flex:1}
+.io-nm .kbd{white-space:nowrap}
+
+/* ============ ACTIVATED ABILITIES ============
+   Same cue as a card waiting to be flipped (ring + gentle bob): on your
+   reveal turn, "glowing and moving" always means "tap me now". The ⚙ chip
+   says the card has an ability at all; dimmed, it's not usable yet. */
+.slot.activatable .mini{box-shadow:0 0 0 2px var(--energy), 0 0 22px -6px var(--energy);animation:bob 1.8s ease-in-out infinite}
+.slot.activatable{cursor:pointer}
+.act-chip{position:absolute;left:2px;bottom:12px;z-index:4;display:inline-flex;align-items:center;gap:1px;
+  font-size:9.5px;line-height:1;padding:2px 4px;border-radius:99px;font-weight:700;
+  background:rgba(8,24,26,.82);color:var(--ink-dim);border:1px solid var(--line-2)}
+.act-chip b{color:var(--energy);font-weight:700;margin-left:1px}
+.act-chip.ready{background:var(--energy);color:#2b1a02;border-color:transparent}
+.act-chip.ready b{color:#2b1a02}
+.act-chip.spent{opacity:.45;text-decoration:line-through}
+.act-chip.used,.act-chip.new,.act-chip.poor,.act-chip.idle{opacity:.7}
+.act-info{display:flex;flex-direction:column;gap:6px;align-items:flex-start;margin-top:4px;padding-top:6px;border-top:1px dashed var(--ui-line)}
+.fx-act{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:8px;padding:8px;border-radius:var(--r-s);
+  background:color-mix(in srgb,var(--energy) 9%,transparent);border:1px solid color-mix(in srgb,var(--energy) 30%,transparent)}
+.fx-act .field.narrow{flex:0 1 130px;min-width:110px}
+.fx-help{flex:1 1 100%;margin:2px 0 0;font-size:12px;line-height:1.45;color:var(--ui-dim);padding-left:9px;border-left:2px solid var(--ui-line-2)}
+
+
+/* ============ ABILITY ANIMATIONS ============
+   One overlay for everything that travels or outlives its card (beams, the
+   crumbling ghost of a destroyed card); state-driven classes for the rest.
+   The caster's player colour carries through beam → glow, so you can follow
+   whose ability is doing what. */
+#fxlayer{position:fixed;inset:0;pointer-events:none;z-index:60;overflow:hidden}
+
+/* beam: grows from the caster to the target, a bright head leading */
+.fx-beam{position:fixed;height:0;transform-origin:0 50%;transform:rotate(var(--a));pointer-events:none}
+.fx-beam-line{position:absolute;left:0;top:-2px;height:4px;width:100%;border-radius:4px;transform-origin:0 50%;
+  background:linear-gradient(90deg,transparent,var(--fxc) 35%,#fff);box-shadow:0 0 10px 2px var(--fxc);
+  animation:fxGrow var(--ms) cubic-bezier(.3,.7,.3,1) both, fxFade .3s ease-in var(--ms) forwards}
+.fx-beam-head{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;background:#fff;
+  box-shadow:0 0 12px 5px var(--fxc);
+  animation:fxHead var(--ms) cubic-bezier(.3,.7,.3,1) both, fxFade .3s ease-in var(--ms) forwards}
+@keyframes fxGrow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes fxHead{from{transform:translateX(0)}to{transform:translateX(var(--d))}}
+@keyframes fxFade{to{opacity:0}}
+
+/* target: lit in the caster's colour while the ability works on it */
+.slot.fx-target,.card.fx-target{animation:fxGlow .95s ease-out both;position:relative;z-index:3;overflow:visible}
+@keyframes fxGlow{
+  0%  {box-shadow:0 0 0 2px var(--fxc),0 0 24px 7px var(--fxc);filter:brightness(1.35)}
+  70% {box-shadow:0 0 0 2px var(--fxc),0 0 16px 3px var(--fxc);filter:brightness(1.12)}
+  100%{box-shadow:0 0 0 0 transparent;filter:none}}
+
+/* Power ticking up or down: the number swells and glows, counts, then settles */
+.mini .p{transform-origin:top right;transition:transform .2s ease, box-shadow .3s ease}
+.badge.p{transform-origin:top right;transition:transform .2s ease, box-shadow .3s ease}
+.p.ticking,.badge.p.ticking{transform:scale(1.45);z-index:6}
+.p.tick-up{--tc:var(--p1);box-shadow:0 0 0 1.5px #fff,0 0 12px 4px var(--tc)}
+.p.tick-down{--tc:var(--danger);box-shadow:0 0 0 1.5px #fff,0 0 12px 4px var(--tc)}
+
+/* destroyed or discarded: crumbles away from the top, shedding sparks */
+.fx-ghost{position:fixed;pointer-events:none}
+.fx-ghost > .mini,.fx-ghost > .card{position:absolute;inset:0;width:100%;height:100%;margin:0;transform:none;animation:none}
+.fx-ghost > .fx-vanish{
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,transparent 45%,#000 55%,#000 100%);
+          mask-image:linear-gradient(to bottom,transparent 0,transparent 45%,#000 55%,#000 100%);
+  -webkit-mask-size:100% 220%;mask-size:100% 220%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  animation:fxCrumble var(--ms) ease-in forwards}
+@keyframes fxCrumble{
+  from{-webkit-mask-position:0 100%;mask-position:0 100%;filter:none}
+  to  {-webkit-mask-position:0 0%;mask-position:0 0%;filter:brightness(1.7) saturate(.6)}}
+.fx-dust{position:absolute;width:3px;height:3px;border-radius:50%;background:#fff;box-shadow:0 0 6px 1px var(--fxc);opacity:0;
+  animation:fxDust .62s ease-out forwards}
+@keyframes fxDust{0%{opacity:0;transform:translate(0,0)}15%{opacity:1}100%{opacity:0;transform:translate(var(--dx),var(--dy))}}
+
+/* drawn (or created) into your hand: floats in from the right edge */
+.card.fx-draw{animation:fxDrawIn .62s cubic-bezier(.2,.8,.25,1) both}
+@keyframes fxDrawIn{from{transform:translateX(110vw) rotate(7deg);opacity:.25}70%{opacity:1}to{transform:none;opacity:1}}
+
+/* summoned: fades in from the bottom up */
+.mini.fx-summon{
+  -webkit-mask-image:linear-gradient(to top,#000 0,#000 45%,transparent 55%,transparent 100%);
+          mask-image:linear-gradient(to top,#000 0,#000 45%,transparent 55%,transparent 100%);
+  -webkit-mask-size:100% 220%;mask-size:100% 220%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  animation:fxSummon .72s ease-out both}
+@keyframes fxSummon{
+  from{-webkit-mask-position:0 0%;mask-position:0 0%;filter:brightness(1.8)}
+  to  {-webkit-mask-position:0 100%;mask-position:0 100%;filter:none}}
+
+/* energy: icons arc from where the Energy came from into the pool */
+.fx-energy{position:fixed;margin:-15px 0 0 -12px;font-size:28px;font-style:normal;line-height:1;opacity:0;
+  filter:drop-shadow(0 0 10px var(--energy)) drop-shadow(0 0 3px var(--energy));z-index:60;animation:fxEnergy var(--ms) cubic-bezier(.5,0,.6,1) forwards}
+@keyframes fxEnergy{
+  0%  {opacity:0;transform:translate(0,0) scale(.6)}
+  18% {opacity:1;transform:translate(calc(var(--dx)*.08), calc(var(--dy)*.08 - 30px)) scale(1.5)}
+  55% {opacity:1;transform:translate(calc(var(--dx)*.45), calc(var(--dy)*.45 - 22px)) scale(1.2)}
+  100%{opacity:1;transform:translate(var(--dx),var(--dy)) scale(.7)}}
+.pill.energy.en-hit{animation:enHit .32s ease-out}
+.pill.energy b[data-en]{font-weight:700}
+@keyframes enHit{0%{transform:scale(1)}40%{transform:scale(1.18);box-shadow:0 0 0 2px var(--energy),0 0 18px 2px var(--energy)}100%{transform:scale(1)}}
+
+/* moving: a copy slides between slots while the card itself waits hidden */
+.fx-slide{position:fixed;pointer-events:none;z-index:2;will-change:transform}
+.fx-slide > .mini,.fx-slide > .card{position:absolute;inset:0;width:100%;height:100%;margin:0;
+  box-shadow:0 14px 28px -10px rgba(0,0,0,.6), 0 0 0 1.5px var(--pc)}
+.fx-hidden{visibility:hidden}
+
+/* ============ BETWEEN ROUNDS ============
+   One full-screen beat: the board as it stands (planets, by leader colour),
+   each player's line, then what the next round opens with. */
+.round-screen{position:fixed;inset:0;z-index:72;display:grid;place-items:center;padding:24px 16px;cursor:pointer;
+  background:radial-gradient(120% 80% at 50% 30%, #143034, #040e10);color:var(--ink);
+  animation:rsIn .35s ease-out both}
+/* solid, not see-through: in pass-and-play the next player's hand may be underneath */
+@keyframes rsIn{from{opacity:0}to{opacity:1}}
+.rs-inner{width:min(440px,100%);display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center}
+.rs-kicker{font-size:13px;color:var(--ink-dim);letter-spacing:.08em;text-transform:uppercase}
+.rs-title{font-family:var(--font-d);font-weight:800;font-size:clamp(40px,13vw,64px);letter-spacing:-.04em;line-height:.95;
+  animation:rsTitle .55s cubic-bezier(.2,.8,.25,1) both}
+.rs-title em{font-style:normal;color:var(--p1)}
+.rs-title span{display:block;font-size:15px;font-weight:600;letter-spacing:0;color:var(--ink-dim);margin-top:6px;font-family:var(--font-b)}
+@keyframes rsTitle{from{transform:translateY(14px) scale(.96);opacity:0}to{transform:none;opacity:1}}
+.rs-final{font-size:12px;font-weight:700;color:var(--energy);border:1px solid color-mix(in srgb,var(--energy) 50%,transparent);border-radius:99px;padding:3px 10px}
+.rs-planets{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:4px}
+.rs-planet{display:flex;flex-direction:column;align-items:center;gap:4px}
+.rs-orb{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-size:19px;overflow:hidden;
+  background:radial-gradient(circle at 35% 30%, color-mix(in srgb,var(--po) 80%,#fff), var(--po));box-shadow:0 0 0 2.5px var(--pc)}
+.rs-orb img{width:100%;height:100%;object-fit:cover}
+.rs-score{font-size:11px;font-variant-numeric:tabular-nums}
+.rs-score i{font-style:normal;opacity:.4;margin:0 2px}
+.rs-players{width:100%;display:flex;flex-direction:column;gap:6px}
+.rs-player{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--r-m);background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:14px}
+.rs-player .dot{width:9px;height:9px;border-radius:50%;background:var(--pc);flex:none}
+.rs-player > b{flex:1;text-align:left}
+.rs-player.lead{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 12%,transparent)}
+.rs-stat{font-size:12.5px;color:var(--ink-dim);white-space:nowrap}
+.rs-stat b{color:var(--ink)}
+.rs-next{margin:2px 0 0;font-size:13px;color:var(--ink-dim);max-width:34ch}
+.rs-tap{font-size:12px;color:var(--ink-faint)}
+.rs-bar{width:120px;height:3px;border-radius:3px;background:var(--line);overflow:hidden}
+.rs-bar i{display:block;height:100%;background:var(--p1);transform-origin:0 50%;animation:rsBar linear both}
+@keyframes rsBar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+
+/* ============ v17 ============ */
+/* a discarded card leaves its gap until it has crumbled, then the hand closes up */
+.card.fx-hole{visibility:hidden;pointer-events:none;border-color:transparent;background:none;box-shadow:none;
+  animation:fxHole var(--hc) ease-in forwards}
+@keyframes fxHole{to{width:0;margin-right:-8px;padding:0}}
+
+/* picking a target straight off the board */
+.board.is-picking .tray,.board.is-picking .hand{opacity:.35;pointer-events:none;filter:saturate(.5)}
+.slot.pickable{cursor:pointer;z-index:2;animation:pickPulse 1.3s ease-in-out infinite;border-radius:10px}
+.slot.pickable .mini{box-shadow:0 0 0 2.5px var(--fxc), 0 0 20px -2px var(--fxc)}
+.slot.pickable:hover,.slot.pickable:focus-visible{transform:scale(1.06)}
+.slot.unpickable{opacity:.32;filter:grayscale(.85)}
+.slot.unpickable .mini{animation:none}
+.board.is-picking .slot.open{opacity:.3}
+@keyframes pickPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+.pick-banner{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40;
+  width:min(520px,calc(100vw - 24px));display:flex;align-items:center;gap:12px;padding:10px 12px 10px 14px;border-radius:14px;
+  background:color-mix(in srgb,#0b1a1d 92%,var(--pc));border:1.5px solid var(--pc);
+  box-shadow:0 14px 34px -10px rgba(0,0,0,.7), 0 0 22px -8px var(--pc);animation:bannerIn .25s ease-out both}
+.pick-banner > div{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.pick-banner b{font-size:14.5px;color:var(--ink)}
+.pick-banner span{font-size:12px;color:var(--ink-dim)}
+.pick-banner .btn{color:var(--ink);border-color:var(--line-2);flex:none}
+@keyframes bannerIn{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+
+/* the reader */
+.sheet.inspect .preview-wrap{align-items:flex-start}
+.ins-tags{display:flex;flex-wrap:wrap;gap:6px}
+.ins-tags .chip{display:inline-flex;align-items:center;gap:6px}
+.ins-tags .chip[data-rarity]{border-color:var(--rc)}
+.ins-stats{display:flex;gap:14px;font-size:13.5px}
+.ins-stats i{font-style:normal;font-size:12px;color:var(--ui-dim)}
+.ins-stats i.neg{color:var(--danger)}.ins-stats i.pos{color:color-mix(in srgb,var(--p1) 70%,var(--ui-text))}
+.ins-text{font-size:14px;line-height:1.45;color:var(--ui-text)}
+.ins-words{margin-top:14px;border-top:1px solid var(--ui-line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.ins-word{display:flex;flex-direction:column;gap:2px;font-size:12.5px;line-height:1.4}
+.ins-word b{font-size:13px}
+.ins-word span{color:var(--ui-dim)}
+
+/* the turn timer */
+.turnbar > b{white-space:nowrap}
+.turn-timer{margin-left:auto;flex:none;font-variant-numeric:tabular-nums;font-weight:700;font-size:13px;padding:3px 9px;border-radius:99px;
+  border:1px solid var(--line-2);background:rgba(255,255,255,.04);white-space:nowrap}
+.turn-timer.warn{color:#ffb4a8;border-color:#ff7a6b;background:rgba(255,90,70,.14);animation:timerWarn 1s ease-in-out infinite}
+@keyframes timerWarn{0%,100%{box-shadow:0 0 0 0 rgba(255,90,70,0)}50%{box-shadow:0 0 0 3px rgba(255,90,70,.28);transform:scale(1.06)}}
+
+/* a board card you've picked up to move: it rises out of its slot */
+.slot.lifted{z-index:3}
+.slot.lifted .mini{transform:translateY(-6px) scale(1.04);box-shadow:0 0 0 2.5px var(--pc), 0 14px 26px -10px var(--pc)}
+
+/* ============ ROLL FOR FIRST ============
+   Each round opens with everyone's die tumbling, landing, and the winner
+   lifted in their colour while the rest step back. */
+.dice-screen{position:fixed;inset:0;z-index:73;display:grid;place-items:center;padding:24px 16px;cursor:pointer;
+  background:radial-gradient(120% 80% at 50% 35%, #14302f, #040e10);color:var(--ink);
+  animation:rsIn .25s ease-out both}
+.dice-row{display:flex;flex-wrap:wrap;justify-content:center;gap:18px 22px;margin:10px 0 4px}
+.die-seat{display:flex;flex-direction:column;align-items:center;gap:10px;transition:opacity .3s ease, transform .35s cubic-bezier(.2,.9,.3,1.3)}
+.die-seat > b{font-size:13.5px;color:var(--ink-dim);font-weight:600}
+.die{width:68px;height:68px;border-radius:16px;padding:10px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);
+  place-items:center;background:linear-gradient(150deg,color-mix(in srgb,var(--pc) 92%,#fff),color-mix(in srgb,var(--pc) 70%,#000));
+  box-shadow:inset 0 -5px 0 rgba(0,0,0,.22), inset 0 2px 0 rgba(255,255,255,.35), 0 12px 22px -10px rgba(0,0,0,.7)}
+.die i{width:11px;height:11px;border-radius:50%}
+.die i.on{background:#0d1d20;box-shadow:inset 0 1px 1px rgba(0,0,0,.5)}
+.die[data-rolling]{animation:dieTumble .5s linear var(--delay) infinite}
+@keyframes dieTumble{
+  0%  {transform:translateY(0) rotate(0)}
+  25% {transform:translateY(-16px) rotate(calc(var(--spin) * .25))}
+  50% {transform:translateY(0) rotate(calc(var(--spin) * .5))}
+  75% {transform:translateY(-8px) rotate(calc(var(--spin) * .75))}
+  100%{transform:translateY(0) rotate(var(--spin))}}
+.landed .die{animation:dieLand .32s cubic-bezier(.2,.9,.3,1.4) both}
+@keyframes dieLand{from{transform:scale(1.2) rotate(-8deg)}to{transform:none}}
+.die-seat.win{transform:scale(1.18)}
+.die-seat.win .die{box-shadow:0 0 0 3px var(--pc), 0 0 30px 4px color-mix(in srgb,var(--pc) 70%,transparent), inset 0 -5px 0 rgba(0,0,0,.22)}
+.die-seat.win > b{color:var(--pc);font-weight:800}
+.die-seat.lose{opacity:.38;transform:scale(.92)}
+.dice-result{min-height:26px;font-size:17px;display:flex;align-items:center;gap:8px}
+.dice-result .dot{width:10px;height:10px;border-radius:50%;background:var(--pc)}
+.dice-result i{font-style:normal;font-size:12.5px;color:var(--ink-dim)}
+.landed .dice-result{animation:rsTitle .4s cubic-bezier(.2,.8,.25,1) both}
+
+
+/* ============ PLACING AT ONCE ============
+   One chip per player under the turn bar. Same shape for everyone (similarity);
+   a chip fills with its player's colour the moment they lock in, so the
+   row reads as a single "who are we waiting for" at a glance. */
+.lockbar{display:flex;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.lockbar::-webkit-scrollbar{display:none}
+.lockchip{flex:none;display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;
+  border:1px dashed var(--line-2);font-size:12px;color:var(--ink-dim);transition:background .25s ease, border-color .25s ease, color .25s ease}
+.lockchip i{font-style:normal;font-size:11px;color:var(--ink-faint)}
+.lockchip:not(.in) .dot{animation:thinking 1.4s ease-in-out infinite}
+.lockchip.in{border-style:solid;border-color:var(--pc);background:color-mix(in srgb,var(--pc) 18%,transparent);color:var(--ink)}
+.lockchip.in i{color:var(--pc);font-weight:600}
+.lockchip.me{font-weight:600}
+.locked-tag{font-size:12.5px;font-weight:600;color:var(--p1);padding:4px 10px;border-radius:99px;
+  border:1px solid color-mix(in srgb,var(--p1) 50%,transparent);background:color-mix(in srgb,var(--p1) 12%,transparent)}
+.chip[disabled]{opacity:.4;pointer-events:none}
+
+/* ============ THE READER: WHAT MADE IT, WHAT IT MAKES ============
+   Linked cards sit in one common region under the card text, each a row you
+   can tap through to (and back from, with the arrow in the header). */
+.ins-rel{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.ins-link{display:flex;align-items:center;gap:9px;width:100%;padding:6px 9px 6px 6px;border-radius:var(--r-s);
+  background:var(--ui-panel-2,var(--ui-panel));border:1px solid var(--ui-line);border-left:3px solid var(--pc);
+  color:var(--ui-text);text-align:left;font-size:13px;cursor:pointer}
+.ins-link[data-rarity="token"]{border-left-color:var(--rar-token)}
+.ins-link:active{transform:scale(.98)}
+.ins-link-art{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;font-size:18px;overflow:hidden;flex:none;background:rgba(127,127,127,.12)}
+.ins-link-art img{width:100%;height:100%;object-fit:cover}
+.ins-link-nm{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.ins-link-nm b{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ins-link-nm i{font-style:normal;font-size:11.5px;color:var(--ui-dim)}
+.ins-link-st{display:flex;gap:4px;flex:none}
+.ins-link-st .badge{width:20px;height:20px;font-size:11.5px}
+
+/* ============ SHUFFLING A REVEALED CARD ON ITS PLANET ============
+   The three slots it may go to light up together; your other planets step back. */
+.slot.dest{cursor:pointer}
+.slot.empty.dest.match,.slot.empty.dest.plain{border-style:solid}
+.slot.filled.dest.match,.slot.filled.dest.plain{box-shadow:0 0 0 2px color-mix(in srgb,var(--p1) 70%,transparent),0 0 16px -6px var(--p1)}
+.slot.filled.dest.plain{box-shadow:0 0 0 2px var(--line-2)}
+
+/* ============ ABILITY POP-UPS ============
+   One strip across the top says which card is acting and how long is left;
+   one tab on the side sets the choice aside to look at the board. */
+.choice-src{display:flex;align-items:center;gap:10px;margin:-4px -4px 12px;padding:6px 6px 10px;border-bottom:1px solid var(--ui-line)}
+.cs-card{flex:1;min-width:0;display:flex;align-items:center;gap:10px;background:none;border:0;padding:0;color:var(--ui-text);text-align:left;cursor:pointer}
+.cs-art{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;font-size:20px;overflow:hidden;flex:none;
+  box-shadow:0 0 0 2px var(--pc);background:rgba(127,127,127,.12)}
+.cs-art img{width:100%;height:100%;object-fit:cover}
+.cs-txt{min-width:0;display:flex;flex-direction:column;line-height:1.2}
+.cs-txt b{font-family:var(--font-d);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs-txt span{font-size:12px;color:var(--ui-dim)}
+.sheet.choice .turn-timer{margin-left:0;color:var(--ui-text);border-color:var(--ui-line)}
+.sheet.choice .turn-timer.warn{color:var(--danger)}
+
+.choice-side{position:fixed;right:0;top:24%;transform:translateY(-50%);z-index:74;
+  display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 7px 10px 9px;min-width:52px;
+  border-radius:12px 0 0 12px;border:1.5px solid var(--line-2);border-right:0;
+  background:color-mix(in srgb,#0b1a1d 94%,var(--p1));color:var(--ink);cursor:pointer;
+  box-shadow:-8px 10px 26px -12px rgba(0,0,0,.8);animation:sideIn .22s ease-out both;
+  margin-right:env(safe-area-inset-right)}
+.choice-side .cs-ico{font-size:18px;line-height:1}
+.choice-side .cs-lbl{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.choice-side.away{border-color:var(--p1);box-shadow:-8px 10px 26px -12px rgba(0,0,0,.8),0 0 18px -6px var(--p1)}
+.choice-side .turn-timer.compact{margin:3px 0 0;padding:1px 6px;font-size:11px}
+@keyframes sideIn{from{opacity:0;transform:translate(14px,-50%)}to{opacity:1;transform:translate(0,-50%)}}
+.pick-banner .turn-timer{margin-left:0}
+
+/* ============ GAME END ============ */
+.round-screen.game-end .rs-title em{color:var(--energy)}
+.ge-list{list-style:none;margin:0;padding:0;width:100%;display:flex;flex-direction:column;gap:6px;max-height:42dvh;overflow:auto}
+.ge-list li{display:flex;align-items:center;gap:10px;padding:7px 12px 7px 8px;border-radius:var(--r-m);
+  background:rgba(255,255,255,.05);border:1px solid var(--line);border-left:3px solid var(--pc);text-align:left}
+.ge-n{width:20px;font-size:12px;font-weight:800;color:var(--ink-faint);text-align:center;flex:none;font-variant-numeric:tabular-nums}
+.ge-art{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-size:19px;overflow:hidden;flex:none;background:rgba(255,255,255,.06)}
+.ge-art img{width:100%;height:100%;object-fit:cover}
+.ge-txt{min-width:0;display:flex;flex-direction:column;line-height:1.2}
+.ge-txt b{font-size:14px;color:var(--ink)}
+.ge-txt span{font-size:12px;color:var(--ink-dim)}
