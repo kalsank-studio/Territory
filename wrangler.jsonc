@@ -17,11 +17,6 @@
     { "tag": "v1", "new_sqlite_classes": ["Room"] }
   ],
 
-  "observability": { "enabled": true }
-}
-
-{
-  // ...
   "observability": {
     "logs": {
       "enabled": true,
@@ -35,5 +30,5 @@
       "persist": true
     }
   },
-  // ...
+
 }
