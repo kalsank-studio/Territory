@@ -426,7 +426,7 @@
    "id": "card-13",
    "name": "Gambit",
    "cost": 5,
-   "power": 2,
+   "power": 4,
    "art": {
     "t": "emoji",
     "v": "🎴"
@@ -561,7 +561,7 @@
    "id": "card-27",
    "name": "Darksight",
    "cost": 3,
-   "power": 3,
+   "power": 5,
    "art": {
     "t": "emoji",
     "v": "⚰️"
@@ -752,7 +752,8 @@
       "player": "self",
       "here": false,
       "rule": "choice"
-     }
+     },
+     "optional": true
     }
    ],
    "token": false
@@ -949,8 +950,8 @@
   {
    "id": "card-43",
    "name": "Honeypot",
-   "cost": 3,
-   "power": 5,
+   "cost": 2,
+   "power": 3,
    "art": {
     "t": "emoji",
     "v": "🍯"
@@ -1164,7 +1165,8 @@
      "v": "move",
      "when": "gameEnd",
      "t": "self",
-     "dest": "choice"
+     "dest": "choice",
+     "optional": true
     }
    ],
    "token": false,
@@ -1291,7 +1293,7 @@
    "id": "card-56",
    "name": "Queen Joy",
    "cost": 5,
-   "power": 7,
+   "power": 6,
    "art": {
     "t": "emoji",
     "v": "🦄"
@@ -1328,9 +1330,10 @@
     {
      "v": "summon",
      "when": "discarded",
-     "from": "prev",
+     "from": "token",
      "at": "choice",
-     "side": "self"
+     "side": "self",
+     "tok": "token-4"
     }
    ],
    "token": false
@@ -1338,7 +1341,7 @@
   {
    "id": "card-58",
    "name": "Mercy",
-   "cost": 3,
+   "cost": 4,
    "power": 3,
    "art": {
     "t": "emoji",
@@ -1485,6 +1488,18 @@
      "dest": "here"
     }
    ],
+   "token": true
+  },
+  {
+   "id": "token-4",
+   "name": "Wormington Jr",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🪱"
+   },
+   "fx": [],
    "token": true
   }
  ],
@@ -2045,7 +2060,7 @@
   "choiceTimer": 30,
   "kinds": [
    "human",
-   "human",
+   "bot",
    "human",
    "bot"
   ],
@@ -2055,7 +2070,7 @@
    "d2",
    "d2"
   ],
-  "sandbox": false,
+  "sandbox": true,
   "onlineName": "Kal",
   "turnTimer": 0,
   "turnTimerCustom": false
