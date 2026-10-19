@@ -22,8 +22,8 @@ rooms, is in **[DEPLOY.md](DEPLOY.md)**.
 | `server/worker.js` | The online room relay: a Cloudflare Worker and one Durable Object per room. See DEPLOY.md. |
 | `build.js` | `npm run build`: writes `dist/` — `index.html` with the CSS and JS inlined (also a working offline single file), `library.json`, `art/`. |
 | `build-library.js` | Turns a card CSV into `game/library.json` with the studio's own importer. |
-| `wrangler.jsonc`, `package.json` | Cloudflare config and the `build` / `dev` / `deploy` / `test` scripts. |
-| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. See *Getting ready for online play* below. |
+| `wrangler.json`, `package.json` | Cloudflare config and the `build` / `dev` / `deploy` / `test` scripts. |
+| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
 | *(older)* | The earlier headless suites (`test-targeting.js`, `test-abilities.js`, `test-flow.js` and the rest) live with the original prototype files, not in this folder. |
 
 ## Layout of `game.js`
@@ -649,8 +649,8 @@ follows whichever seat you are looking through.
 
 ## Getting ready for online play
 
-The engine is now built the way a server needs it. Nothing is networked yet;
-every piece below runs and is tested on one device.
+The engine is built the way a server needs it; section 9 (*Online play*, below)
+is the transport on top. Everything here also runs on one device.
 
 **One seeded game.** `newGame()` picks a seed (or takes one: `LIB.settings.seed`,
 or `newGame({seed})`) and keeps the random streams in the state: `G.rng` for the
@@ -705,24 +705,33 @@ connected, `dispatch` sends the command instead of applying it, `localSeat()`
 is `NET.seat`, the hand-over screen never shows, and placement is always all at
 once. No transport is wired yet.
 
-### Still to do for online
+## Online play
 
-Done: the website (Workers static assets), the shipped card library, and a room
-relay with codes, seats and reconnect tokens (`server/worker.js`, DEPLOY.md).
+Section 9 of `game.js`, on top of the relay in `server/worker.js` (see DEPLOY.md).
+**The host's browser runs the game**: it holds the real `G` and is seat 0
+(`NET.seat = 0`, `NET.send = null`, so its own taps apply directly).
 
-1. **A "Play online" screen**: make a room or type a code, see who's in, start.
-2. **Wire it up**, host-runs-the-game: the host's browser holds `G`, applies guests'
-   commands with `dispatch`, and sends each seat its `playerView`; guests set
-   `NET.send` to the socket and draw the views they get, playing `G.events` (from the
-   last number seen) as animations.
-3. **Online polish**: reconnecting mid-game, a host who leaves, the turn timer
-   on the host.
-4. Later, for strangers or ranked play: the game moves from the host's browser into
-   the room (the Durable Object loads `game.js` and holds `G`), one shared card list,
-   accounts and matchmaking.
+| Piece | How it works |
+| --- | --- |
+| Screens | Title → **Play online** (`UI.screen = 'online'`, `viewOnline`): your name, *Make a room* (2–4 seats), *Join* by code, or *Rejoin / Resume* a room this device holds. In a room, `viewLobby`: the code, an invite link (`?room=CODE`), one row per seat with its deck, the host's settings (planets, rounds, turn and choice timers) and *Start*. Empty seats become bots. Lobby buttons use `data-on` and their own listeners, so they don't touch the main click switch. |
+| Messages | Inside the relay's `{data}`. Guest → host: `{t:'hello'}`, `{t:'deck', id}`, `{t:'cmd', cmd}`. Host → guest: `{t:'lobby', lobby, decks, reset?}`, `{t:'view', v, ui, arts}`, `{t:'clock', timers}`, `{t:'nope', why}`, `{t:'closed'}`. |
+| Commands | A guest's `dispatch` checks the move against its own view first (`cmdCheck`, and `dryRun` of place / move / unplace on a copy), then sends it. The host overwrites `cmd.seat` with the sender's seat, refuses `sandbox` and `standin` from guests, and runs `dispatch` as for its own taps. |
+| Views | `render()` on the host calls `hostBroadcast()` (30 ms debounce): each online guest gets `playerView(G, seat)` with only the events it hasn't had, plus `hostScreenState()` — the beat bar, the round / Game End screen, the dice, and both clocks. A view identical to the last one sent isn't sent again. |
+| Art | `packArts` swaps any `data:` string over 1.5 KB for a short reference; each image travels once per guest (`ON.sent[seat].arts`), and `unpackArts` puts it back. A message over 1 MB isn't sent (the host is told to move sprites into `art/`). |
+| Guest drawing | `guestView`: crumbles and slides play from the old screen, then `G = view`, then arrivals, Energy, the flip (`UI.flipAnim`) and beams on the new one. The first view after joining or reloading plays nothing. The host's beats and dice are mirrored; taps on them do nothing on a guest. "Turn the rest over" sends one flip at a time (`guestAfterView`). |
+| Clocks | Only the host counts. Online placement is one clock for everyone still placing (`timerKey` → `round:placement:all`; at zero every human still placing is locked in). Guests show the host's numbers (`netTimerHTML`), counting down between updates. |
+| Choices | The host never sees another seat's choice sheet, only "… is choosing" with the clock; the chooser's device gets the sheet. |
+| Connections | Seat tokens are kept in `localStorage` (`territory.v1.online`). A dropped socket retries with back-off (0.8 s → 10 s); a socket that goes quiet for 50 s, or a phone coming back online or to the foreground, reconnects at once (`dropAndRetry`). A reload goes straight back in. The host's game is saved after every settled moment (`territory.v1.hostgame`) and `hostResume` restores it, streams included. |
+| Dropped players | The host sees a banner per seat that's away, with **Let a bot play** → `{t:'standin', seat:0, target, on:true}` (a logged command, so replays still match). The seat goes back to its player when they reconnect. A choice the seat owed is made at random. |
+| Ending | The host's results screen offers **Back to the lobby** (everyone returns together); *End the game for everyone* in the menu closes the room. |
+
+**Next for online:** run the game in the Durable Object instead of the host's
+browser (load `game.js` headless, hold `G`, apply commands) so nobody can peek and
+the host can leave; a guest's own decks travelling with them; accounts and
+matchmaking.
 
 ## Not built
 
-The online screens and wiring (above). Local hot-seat covers 2–4 players on one
+The server-held game and matchmaking (above). Local hot-seat covers 2–4 players on one
 device, with a pass-the-device screen between turns when more than one seat is
 human; one human against bots can place all at once.

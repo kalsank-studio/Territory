@@ -12,6 +12,7 @@
      6. Bot
      7. Rendering (title, setup, board, results, studio, decks, sprites)
      8. Event routing
+     9. Online (host runs the game, guests send commands and draw views)
    =================================================================== */
 
 /* ------------------------------------------------------------------
@@ -1754,7 +1755,7 @@ function newGame(opts){
     const deck = deckById(s.deckOf[i] || LIB.decks[0].id);
     const cards = (deck.cards||[]).map(id=>defById(id)).filter(Boolean).map(d=>instance(d,i));
     players.push({
-      idx:i, name:PNAMES[i], kind:(s.kinds[i]||'human'),
+      idx:i, name:(s.names && s.names[i]) || PNAMES[i], kind:(s.kinds[i]||'human'),
       deck:shuffle(cards), hand:[], energy:0, planned:0, placed:[]
     });
   }
@@ -2360,10 +2361,15 @@ const timerPreset = s => s.turnTimerCustom ? 'custom' : String(s.turnTimer||0);
 const fmtClock = ms => { const t = Math.max(0, Math.ceil(ms/1000)); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); };
 const TIMER_WARN = 10000;
 function timerKey(){
+  /* Online, everyone places at once on their own device: one clock for the
+     whole placement, held by the host, for every human still placing. */
+  if(G && G.online && G.simul && G.phase==='placement' && !G.over)
+    return G.players.some(q=>q.kind==='human' && !q.locked) ? G.round+':placement:all' : null;
   const p = currentPlayer();
   return (G && p && p.kind==='human' && !G.over) ? G.round+':'+G.phase+':'+p.idx : null;
 }
 function timerHTML(){
+  if(G && G.isView) return netTimerHTML('turn');
   if(!G || !LIB.settings.turnTimer) return '';
   const key = timerKey();
   if(!key) return '';
@@ -2389,6 +2395,7 @@ function timedChoice(){
   return (G.players[seat] && G.players[seat].kind==='human') ? ch : null;
 }
 function choiceTimerHTML(compact){
+  if(G && G.isView) return netTimerHTML('choice', compact);
   const secs = choiceSecs();
   const ch = secs ? timedChoice() : null;
   if(!ch) return '';
@@ -2422,6 +2429,7 @@ function timeOutChoice(){
 }
 
 function tickTimer(){
+  if(G && G.isView){ netTimerTick(); return; }     // a guest only shows the host's clocks
   if(tickChoiceTimer(Date.now())){ if(UI.timer) UI.timer.last = Date.now(); return; }
   const secs = LIB && LIB.settings && LIB.settings.turnTimer;
   const key = secs ? timerKey() : null;
@@ -2441,6 +2449,14 @@ function tickTimer(){
 /** Time ran out: make the open choice at random, then finish the turn. Called
     again on every tick until the turn has moved on. */
 function autoCompleteTurn(){
+  if(G && G.online && G.simul && G.phase==='placement'){
+    if(!UI.timer || UI.timer.key!==timerKey()) return;
+    if(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.flipAnim || UI.animLock || UI.fxWait) return;
+    if(G.choice){ autoResolveChoice(); return; }
+    UI.sel = null; UI.drag = null; DRAG.uid = null;
+    G.players.filter(q=>q.kind==='human' && !q.locked).forEach(q=>dispatch({t:'lock', seat:q.idx}));
+    return;
+  }
   const p = currentPlayer();
   if(!p || p.kind!=='human' || !UI.timer || UI.timer.key!==timerKey()) return;
   if(UI.sheet==='peek'){ UI.sheet = null; UI.peek = null; }
@@ -2547,7 +2563,7 @@ const ROUND_MS = Math.max(PAUSE, 60);          // one second; a tap skips it
 const GAME_END_MS = Math.max(PAUSE*2.4, 60);   // long enough to read who fires
 function showRoundScreen(next, info, ms){
   G.hold = true;
-  if(fxIdleIn()){ whenFxIdle(()=>showRoundScreen(next)); render(); return; }
+  if(fxIdleIn()){ whenFxIdle(()=>showRoundScreen(next, info, ms)); render(); return; }
   const game = G, epoch = G.epoch;
   let done = false;
   const go = ()=>{
@@ -2700,6 +2716,9 @@ const botsDrive = () => !UI.replaying;
      {t:'endReveal', seat, early?}      end your reveal turn (early: the timer ran out)
      {t:'choose',    seat, uid | i}     answer the open choice (a card by uid, or option i)
      {t:'sandbox',   seat, op, …}       the sandbox bench (never online)
+     {t:'standin',   seat, target, on}  online, the host only: a bot plays for a
+                                        seat whose player has dropped (on), or
+                                        hands it back when they return (off)
 
    dispatch checks that `seat` may act right now and that the move is legal,
    applies it, and appends it to G.cmdLog. The same seed plus the same log
@@ -2710,8 +2729,8 @@ const botsDrive = () => !UI.replaying;
 
 /* The network hook. Online, a device doesn't apply its own moves: it sends
    them to whoever holds the game (`NET.send`) and draws what comes back.
-   Nothing is connected yet — this is where the transport plugs in. */
-const NET = { seat:null, send:null, applying:false };
+   Section 9 connects it: the host's browser holds G, guests send commands. */
+const NET = { seat:null, send:null, applying:false };   // section 9 (ONLINE) fills these in
 
 /** The seat this device acts for when nobody is passing it around: online,
     its own seat; at a table with one human, that human. */
@@ -2733,6 +2752,7 @@ function cmdCheck(cmd){
   if(!p) return 'seat';
   if(cmd.t==='sandbox') return (G.sandbox && !G.online) ? '' : 'nosandbox';
   if(cmd.t==='choose') return !G.choice ? 'nochoice' : chooserOf(G.choice)===cmd.seat ? '' : 'notyours';
+  if(cmd.t==='standin') return (G.online && cmd.seat===0 && G.players[cmd.target] && cmd.target!==0) ? '' : 'notyours';
   if(G.choice) return 'choice';
   if(G.hold || G.flipping || G.fxQueue) return 'busy';
   const slotOk = Number.isInteger(cmd.p) && Number.isInteger(cmd.s) && G.planets[cmd.p] && cmd.s>=0 && cmd.s<G.planets[cmd.p].slots.length;
@@ -2754,7 +2774,13 @@ function cmdCheck(cmd){
 
 /** The one way in. Returns {ok, why}. */
 function dispatch(cmd){
-  if(G && G.online && NET.send && !NET.applying){ NET.send(cmd); return {ok:true, sent:true}; }
+  if(G && G.online && NET.send && !NET.applying){
+    /* A guest checks a move against its own view first, so a tap that
+       can't work says so at once instead of after a round trip. */
+    const why = cmdCheck(cmd) || dryRun(cmd);
+    if(why) return {ok:false, why};
+    NET.send(cmd); return {ok:true, sent:true};
+  }
   const why = cmdCheck(cmd);
   if(why) return {ok:false, why};
   const rec = Object.assign({n: G.cmdLog.length+1}, cmd);
@@ -2763,6 +2789,15 @@ function dispatch(cmd){
   try{ ok = applyCommand(cmd)!==false; }
   finally{ if(!ok){ const i = G.cmdLog.indexOf(rec); if(i>=0) G.cmdLog.splice(i,1); } }
   return {ok, why: ok ? '' : 'illegal'};
+}
+
+/** Try a placement-type command on a throwaway copy of the view. */
+function dryRun(cmd){
+  if(!['place','move','unplace'].includes(cmd.t)) return '';
+  const real = G;
+  try{ G = JSON.parse(JSON.stringify(real)); return applyCommand(cmd)!==false ? '' : 'illegal'; }
+  catch(e){ return ''; }
+  finally{ G = real; }
 }
 
 function applyCommand(cmd){
@@ -2795,8 +2830,20 @@ function applyCommand(cmd){
       endReveal(p.idx, !!cmd.early); return true;
     case 'choose':  return applyChoice(cmd);
     case 'sandbox': return applySandbox(cmd);
+    case 'standin': return applyStandIn(cmd);
   }
   return false;
+}
+/** Online: a bot takes a dropped player's seat, or gives it back. A choice
+    that seat still owes is made for it, as a timer would. */
+function applyStandIn(cmd){
+  const q = G.players[cmd.target];
+  if(!!cmd.on === !!q.standIn) return false;
+  if(cmd.on){ q.kind = 'bot'; q.standIn = true; say(`A bot plays for ${q.name} until they're back.`); }
+  else { q.kind = 'human'; delete q.standIn; say(`${q.name} is back.`); }
+  if(cmd.on && G.choice && chooserOf(G.choice)===q.idx) setTimeout(()=>{ if(G && G.choice && chooserOf(G.choice)===q.idx) autoResolveChoice(); }, 0);
+  setTimeout(()=>{ if(G && !G.over) afterStateChange(); }, 0);
+  return true;
 }
 
 /** Answer the open choice, after checking the answer is one of its options. */
@@ -2923,7 +2970,7 @@ function playerView(state, seat){
     the devices to replay in order). Events are numbered; `vis` limits who
     hears about one. The last few hundred are kept. */
 function emit(k, data){
-  if(!G || !G.events) return null;
+  if(!G || !G.events || G.isView) return null;
   const e = Object.assign({n: ++G.eventN, k, round:G.round}, data||{});
   G.events.push(e);
   if(G.events.length > 400) G.events.splice(0, G.events.length - 400);
@@ -4377,9 +4424,11 @@ function render(){
     case 'decks':  html = viewDecks(); break;
     case 'sprites':html = viewSprites(); break;
     case 'rules':  html = viewRules(); break;
+    case 'online': html = viewOnline(); break;
   }
   $('#app').innerHTML = html;
   $('#overlay').innerHTML = viewOverlays();
+  if(G && G.online && !G.isView && ON.role==='host') hostBroadcast();     // guests see what the host sees
 
   const s2 = $('.strip'), h2 = $('.hand');
   if(s2) s2.scrollLeft = scrollMemo.strip;
@@ -4430,7 +4479,9 @@ function viewTitle(){
       <h1 class="wordmark">Terri<em>tory</em></h1>
       <p class="tagline">Six rounds. Five worlds. Hold the most ground when the last card turns over.</p>
       <div class="title-actions">
-        <button class="btn primary" data-act="newgame" data-v="0">Start a game<span class="k">2\u20134 players</span></button>
+        ${inRoom() ? `<button class="btn primary" data-on="backtoroom">Back to room ${esc(ON.code)}<span class="k">${G && (G.online||G.isView) ? 'game in progress' : 'lobby'}</span></button>` : ''}
+        <button class="btn ${inRoom()?'':'primary'}" data-act="newgame" data-v="0">Start a game<span class="k">2\u20134 players, one device</span></button>
+        <button class="btn" data-on="open">Play online<span class="k">each on their own device</span></button>
         <button class="btn" data-act="newgame" data-v="1">Sandbox<span class="k">test anything</span></button>
         <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards &amp; planets</span></button>
         <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
@@ -4537,6 +4588,7 @@ function lockedSeat(){
     or the seat being inspected once the game is over. */
 function viewerIdx(){
   if(G && G.isView) return G.viewer;        // a device drawing a server's view of the game
+  if(G && G.online && NET.seat!=null && !G.over) return NET.seat;   // the host's own seat
   const lock = lockedSeat();
   if(lock!=null) return lock;
   const p = currentPlayer();
@@ -4948,7 +5000,9 @@ function viewResult(){
       <div class="row">
         <button class="btn primary" data-act="review">Review the board</button>
         <button class="btn" data-act="sheet" data-v="grave">Graveyard</button>
-        <button class="btn" data-act="begin">Play again</button>
+        ${G.online || G.isView
+          ? (ON.role==='host' ? `<button class="btn" data-on="lobby">Back to the lobby</button>` : `<p class="tiny muted" style="margin:0;text-align:center">The host can take everyone back to the lobby for another game.</p>`)
+          : `<button class="btn" data-act="begin">Play again</button>`}
         <button class="btn" data-act="sheet" data-v="log">Read the log</button>
         <button class="btn ghost" data-act="home">Menu</button>
       </div>
@@ -5179,6 +5233,7 @@ function graveSheetHTML(){
 
 function viewOverlays(){
   let out = '';
+  if(UI.screen==='game' && G && (G.online || G.isView)){ const nb = netStatusHTML(); if(nb) out += `<div class="net-banners">${nb}</div>`; }
   if(UI.screen==='game' && G && UI.transition){
     const tr = UI.transition;
     const pc = tr.pi==null ? 'var(--p1)' : PCOLORS[tr.pi];
@@ -5208,8 +5263,11 @@ function viewOverlays(){
     if(G.choice){
       if(UI.sheet==='peek' && UI.peek) return out + inspectSheetHTML(UI.peek);
       /* someone else is choosing (a view from the server says only that) */
-      if(G.choice.waiting) return out + `<div class="pick-banner" style="--pc:${PCOLORS[G.choice.chooser]}" role="status">
-        <div><b>${esc(G.players[G.choice.chooser].name)} is choosing\u2026</b><span>Play carries on once they pick.</span></div></div>`;
+      if(G.choice.waiting || (G.online && !G.isView && chooserOf(G.choice)!==NET.seat)){
+        const who = chooserOf(G.choice);
+        return out + `<div class="pick-banner" style="--pc:${PCOLORS[who]}" role="status">
+        <div><b>${esc(G.players[who].name)} is choosing\u2026</b><span>Play carries on once they pick.</span></div>${G.isView ? netTimerHTML('choice') : choiceTimerHTML()}</div>`;
+      }
       if(UI.sheet==='grave') return out + graveSheetHTML();
       if(UI.sheet==='sandbox' && G.sandbox) return out + sandboxSheetHTML();
       if(UI.choicePeek===G.choice) return out + choiceSideHTML();
@@ -5233,13 +5291,16 @@ function viewOverlays(){
       <div class="sheet-head"><h3>Game menu</h3><button class="btn sm ghost" data-act="closesheet">Close</button></div>
       <div class="stack">
         <div class="row">
-          ${G.players.map(p=>`<span class="chip"><span class="dot" style="--pc:${PCOLORS[p.idx]};display:inline-block"></span> ${esc(p.name)} \u00B7 \u26A1${p.energy} \u00B7 ${p.hand.length} in hand \u00B7 ${p.deck.length} in deck</span>`).join('')}
+          ${G.players.map(p=>`<span class="chip"><span class="dot" style="--pc:${PCOLORS[p.idx]};display:inline-block"></span> ${esc(p.name)}${(G.online||G.isView) && p.kind!=='bot' && p.idx!==viewerIdx() ? (seatOnline(p.idx)?'':' (away)') : ''}${p.standIn?' (bot standing in)':''} \u00B7 \u26A1${p.energy} \u00B7 ${p.hand.length} in hand \u00B7 ${p.deck.length} in deck</span>`).join('')}
         </div>
         <p class="tiny muted" style="margin:0">Press and hold any card (or right-click it) to read it in full, with what its words mean.</p>
         <button class="btn" data-act="theme">Switch light / dark</button>
         <button class="btn" data-act="toggleanim">Ability animations: ${LIB.settings.anim===false?'off':'on'}</button>
+        ${G.online || G.isView ? `
+        <button class="btn" data-act="home">Main menu <span class="muted tiny">(the game carries on)</span></button>
+        <button class="btn danger" data-on="endgame">${ON.role==='host' ? 'End the game for everyone' : 'Leave the game'}</button>` : `
         <button class="btn" data-act="begin">Restart with the same setup</button>
-        <button class="btn danger" data-act="home">Quit to menu</button>
+        <button class="btn danger" data-act="home">Quit to menu</button>`}
       </div></div>`;
   }
 
@@ -6976,6 +7037,645 @@ function applyPack(text){
 }
 
 /* ------------------------------------------------------------------
+   9. ONLINE
+   Host-runs-the-game, through the room relay in server/worker.js:
+
+     - The host's browser holds the real G. Guests send it commands
+       ({t:'cmd', cmd}); the host checks and applies them with dispatch,
+       exactly like its own taps, with the seat set from who sent it.
+     - After every change the host sends each guest its playerView, plus
+       what's on the host's screen that isn't game state (the beat bar, the
+       round screen, the dice, the clocks). Guests set G to the view, draw
+       it, and play the events that are new to them as animations.
+     - Long art (uploaded sprites) travels once per guest: a view carries a
+       short reference and the image itself rides along the first time.
+     - Everyone keeps their seat token, so a dropped connection or a reload
+       comes back to the same chair. The host's game is saved after every
+       settled step, so a host who reloads picks up where they were. A host
+       can let a bot play for someone who has gone, until they return.
+
+   The relay never looks inside a message. Anyone holding the host's
+   browser could cheat, so this is for friends, not strangers.
+   ------------------------------------------------------------------ */
+const ONLINE_KEY = KEY + '.online';          // {code, token, seat, role, name}: this device's room
+const HOSTGAME_KEY = KEY + '.hostgame';      // the host's game and lobby, to resume after a reload
+const ON = {
+  ws:null, code:null, seat:null, token:null, role:null,       // role: 'host' | 'guest'
+  status:'idle',            // idle | connecting | open | retry | closed
+  seats:[],                 // from the relay: [{seat, name, online}]
+  roomSeats:2,
+  lobby:null,               // the host's lobby (guests get a copy): {seats:[{deck, bot}], planets, rounds, turnTimer, choiceTimer}
+  decks:[],                 // the host's decks, for picking in the lobby
+  sent:{},                  // host, per seat: what it last sent {sig, ev, arts:Set}
+  bT:null, saveT:null, retries:0, retryT:null, pingT:null,
+  lastEv:0, arts:{}, fresh:true,      // guest: the last event played, the art cache
+  timers:null, timersAt:0,
+  flipAsk:null,             // guest: the last flip sent on "turn the rest over"
+  error:'', joinCode:'', intentional:false
+};
+const onlineAvailable = () => typeof location!=='undefined' && /^https?:$/.test(location.protocol);
+const apiURL = path => location.origin + path;
+function savedRoom(){ try{ return JSON.parse(localStorage.getItem(ONLINE_KEY)||'null'); }catch(e){ return null; } }
+function rememberRoom(){ try{ localStorage.setItem(ONLINE_KEY, JSON.stringify({code:ON.code, token:ON.token, seat:ON.seat, role:ON.role, name:onlineName()})); }catch(e){} }
+function forgetRoom(){ try{ localStorage.removeItem(ONLINE_KEY); localStorage.removeItem(HOSTGAME_KEY); }catch(e){} }
+const onlineName = () => (LIB.settings.onlineName || '').trim().slice(0, 24);
+const inRoom = () => !!(ON.code && ON.status!=='idle' && ON.status!=='closed');
+const seatOnline = i => { const s = ON.seats.find(x=>x.seat===i); return !!(s && s.online); };
+const seatName = i => { const s = ON.seats.find(x=>x.seat===i); return (s && s.name) || PNAMES[i]; };
+const isHost = () => ON.role==='host';
+
+/* --- the connection ------------------------------------------------------- */
+
+async function createRoom(seats){
+  ON.error = '';
+  try{
+    const r = await fetch(apiURL('/api/rooms'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({seats})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || 'The server said no.');
+    ON.role = 'host'; ON.code = j.code; ON.roomSeats = j.seats; ON.token = null;
+    ON.lobby = defaultLobby(j.seats);
+    connect();
+  }catch(e){ ON.error = 'Could not make a room: '+(e.message||e); render(); }
+}
+async function joinRoom(code, token){
+  ON.error = '';
+  code = String(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(code.length!==5){ ON.error = 'A room code is five letters and numbers.'; render(); return; }
+  try{
+    const r = await fetch(apiURL('/api/rooms/'+code));
+    if(r.status===404){ const sv = savedRoom(); if(sv && sv.code===code) forgetRoom(); throw new Error('There is no room with that code (rooms close a day after everyone leaves).'); }
+    const info = await r.json();
+    const full = info.players.length >= info.seats && !token;
+    if(full) throw new Error('That room is full.');
+    ON.code = code; ON.roomSeats = info.seats; ON.token = token || null;
+    if(!ON.role) ON.role = 'guest';
+    connect();
+  }catch(e){ ON.error = e.message || String(e); ON.status = 'idle'; render(); }
+}
+function connect(){
+  clearTimeout(ON.retryT);
+  if(ON.ws){ try{ ON.ws.onclose = null; ON.ws.close(); }catch(e){} }
+  ON.status = ON.retries ? 'retry' : 'connecting';
+  ON.intentional = false;
+  const q = new URLSearchParams();
+  if(ON.token) q.set('token', ON.token);
+  if(onlineName()) q.set('name', onlineName());
+  const ws = new WebSocket(apiURL('/api/rooms/'+ON.code+'/socket?'+q).replace(/^http/, 'ws'));
+  ON.ws = ws;
+  ws.onmessage = e => { ON.lastPong = Date.now(); if(e.data==='pong') return; let m; try{ m = JSON.parse(e.data); }catch(err){ return; } onMessage(m); };
+  ws.onclose = () => { if(ON.ws!==ws) return; clearInterval(ON.pingT); if(!ON.intentional) reconnectSoon(); };
+  ws.onerror = () => {};
+  render();
+}
+function reconnectSoon(){
+  ON.status = 'retry';
+  ON.retries++;
+  render();
+  const wait = Math.min(10000, 800 * Math.pow(1.6, ON.retries-1));
+  ON.retryT = setTimeout(async ()=>{
+    try{
+      const r = await fetch(apiURL('/api/rooms/'+ON.code));
+      if(r.status===404){ ON.status = 'closed'; ON.error = 'The room has closed.'; forgetRoom(); render(); return; }
+    }catch(e){ return reconnectSoon(); }               // offline: keep trying
+    connect();
+  }, wait);
+}
+/** The socket has gone quiet or the device came back online: don't wait
+    for the browser to notice, start again now. */
+function dropAndRetry(){
+  const ws = ON.ws;
+  if(!ws || !ON.code) return;
+  ON.ws = null; clearInterval(ON.pingT);
+  try{ ws.onclose = null; ws.close(); }catch(e){}
+  ON.retries = Math.max(ON.retries, 1) - 1;
+  reconnectSoon();
+}
+window.addEventListener('online', ()=>{ if(ON.code && ON.status!=='idle' && ON.status!=='closed' && (!ON.ws || ON.ws.readyState!==1)) dropAndRetry() || (!ON.ws && connect()); });
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState!=='visible' || !ON.code || ON.status==='idle' || ON.status==='closed') return;
+  if(!ON.ws || ON.ws.readyState>1){ clearTimeout(ON.retryT); connect(); }
+  else if(ON.ws.readyState===1){ try{ ON.ws.send('ping'); }catch(e){} }
+});
+
+function leaveRoom(){
+  if(isHost() && ON.ws && ON.status==='open') relay({data:{t:'closed'}}, 'all');
+  ON.intentional = true;
+  clearTimeout(ON.retryT); clearInterval(ON.pingT);
+  try{ if(ON.ws) ON.ws.close(1000, 'left'); }catch(e){}
+  ON.ws = null; ON.status = 'idle'; ON.code = null; ON.role = null; ON.seat = null; ON.token = null;
+  ON.seats = []; ON.lobby = null; ON.sent = {}; ON.lastEv = 0; ON.fresh = true; ON.timers = null;
+  NET.seat = null; NET.send = null;
+  if(G && (G.online || G.isView)) G = null;
+  forgetRoom();
+}
+function relay(msg, to){
+  if(!ON.ws || ON.ws.readyState!==1) return false;
+  const out = to==null ? msg : Object.assign({to}, msg);
+  try{ ON.ws.send(JSON.stringify(out)); return true; }catch(e){ return false; }
+}
+
+function onMessage(m){
+  if(m.sys==='welcome'){
+    ON.seat = m.seat; ON.token = m.token; ON.seats = m.seats; if(m.size) ON.roomSeats = m.size;
+    ON.role = m.seat===0 ? 'host' : 'guest';
+    ON.status = 'open'; ON.retries = 0; ON.error = '';
+    rememberRoom();
+    clearInterval(ON.pingT);
+    ON.lastPong = Date.now();
+    /* keep-alive, and a check that the line is really still there: phones
+       drop sockets without saying so */
+    ON.pingT = setInterval(()=>{
+      if(!ON.ws) return;
+      if(ON.ws.readyState>1 || Date.now() - ON.lastPong > 50000){ dropAndRetry(); return; }
+      if(ON.ws.readyState!==1) return;
+      try{ ON.ws.send('ping'); }catch(e){}
+    }, 20000);
+    if(isHost()){
+      NET.seat = 0; NET.send = null;
+      if(!ON.lobby) ON.lobby = defaultLobby(ON.roomSeats);
+      if(G && G.online) G.players.forEach(p=>{ if(ON.sent[p.idx]) ON.sent[p.idx].sig = ''; });
+      hostSync();
+    }else{
+      NET.seat = m.seat; NET.send = cmd => relay({data:{t:'cmd', cmd}});
+      ON.fresh = true;
+      relay({data:{t:'hello'}});
+      if(!G || !G.isView){ UI.screen = 'online'; }
+    }
+    render();
+    return;
+  }
+  if(m.sys==='seats'){
+    ON.seats = m.seats;
+    if(isHost()){
+      if(m.joined!=null && m.joined!==0){
+        ON.sent[m.joined] = null;                        // a fresh device: send it everything again
+        const p = G && G.online && G.players[m.joined];
+        if(p && p.standIn) dispatch({t:'standin', seat:0, target:m.joined, on:false});
+      }
+      hostSync();
+    }
+    render();
+    return;
+  }
+  if(m.sys==='error'){ console.warn('relay:', m.why); return; }
+  const d = m.data;
+  if(!d || typeof d!=='object') return;
+  if(isHost()) hostReceive(m.from, d); else guestReceive(d);
+}
+
+/* --- the host ---------------------------------------------------------------- */
+
+function defaultLobby(n){
+  const decks = LIB.decks;
+  return { seats: Array.from({length:n}, (_,i)=>({deck:(LIB.settings.deckOf[i] && decks.some(d=>d.id===LIB.settings.deckOf[i])) ? LIB.settings.deckOf[i] : decks[Math.min(i, decks.length-1)].id})),
+           planets: LIB.settings.planets||5, rounds: LIB.settings.rounds||6,
+           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30 };
+}
+function lobbyPayload(){
+  return {t:'lobby', lobby:ON.lobby, decks:LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})), playing: !!(G && G.online && !G.over)};
+}
+/** Bring every guest up to date: the lobby before a game, views during one. */
+function hostSync(){
+  if(!isHost()) return;
+  if(G && G.online) hostBroadcast();
+  else relay({data:lobbyPayload()}, 'all');
+}
+function hostReceive(from, d){
+  if(d.t==='hello'){
+    if(G && G.online){ ON.sent[from] = null; hostBroadcast(); }
+    else relay({data:lobbyPayload()}, from);
+    return;
+  }
+  if(d.t==='deck' && !(G && G.online && !G.over) && ON.lobby && ON.lobby.seats[from] && LIB.decks.some(x=>x.id===d.id)){
+    ON.lobby.seats[from].deck = d.id; hostSync(); render(); return;
+  }
+  if(d.t==='cmd' && d.cmd && typeof d.cmd==='object' && G && G.online){
+    const cmd = Object.assign({}, d.cmd, {seat:from});            // a guest only ever acts for its own seat
+    if(cmd.t==='sandbox' || cmd.t==='standin') return;
+    const r = dispatch(cmd);
+    if(!r.ok) relay({data:{t:'nope', why:r.why, c:cmd.t}}, from);
+    render();
+  }
+}
+function startOnlineGame(){
+  const n = ON.roomSeats, L = ON.lobby;
+  const kinds = Array.from({length:n}, (_,i)=> i===0 || ON.seats.some(s=>s.seat===i) ? 'human' : 'bot');
+  const names = Array.from({length:n}, (_,i)=> kinds[i]==='bot' ? 'Bot '+(i+1) : seatName(i));
+  LIB.settings.turnTimer = L.turnTimer; LIB.settings.turnTimerCustom = false; LIB.settings.choiceTimer = L.choiceTimer;
+  saveSoon();
+  ON.sent = {};
+  NET.seat = 0; NET.send = null;
+  UI.screen = 'game'; UI.sheet = null;
+  newGame({online:true, players:n, kinds, names, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
+           sandbox:false, hide:false, placement:'simultaneous'});
+  hostBroadcast();
+}
+/** Back to the lobby after a game, everyone together. */
+function hostBackToLobby(){
+  G = null; UI.screen = 'online'; UI.review = false;
+  try{ localStorage.removeItem(HOSTGAME_KEY); }catch(e){}
+  relay({data:Object.assign(lobbyPayload(), {reset:true})}, 'all');
+  render();
+}
+
+/* What the host's screen is doing that isn't game state, for guests to mirror. */
+function hostScreenState(){
+  const left = t => t ? Math.max(0, Math.round(t.left)) : null;
+  const turn = UI.timer && LIB.settings.turnTimer ? {left:left(UI.timer), paused: timerPaused() || !!UI.ctimer} : null;
+  const choice = UI.ctimer ? {left:left(UI.ctimer), paused: !!(UI.transition || UI.animLock || UI.fxWait || UI.flipAnim)} : null;
+  return {
+    transition: UI.transition || null,
+    roundScreen: UI.roundScreen ? JSON.parse(JSON.stringify(UI.roundScreen)) : null,
+    dice: UI.dice ? {round:UI.dice.round, landed:!!UI.dice.landed} : null,
+    timers: (turn || choice) ? {turn, choice} : null
+  };
+}
+function hostBroadcast(){
+  if(!isHost()) return;
+  clearTimeout(ON.bT);
+  ON.bT = setTimeout(hostSendViews, 30);
+}
+function hostSendViews(){
+  if(!isHost() || !G || !G.online || !ON.ws || ON.ws.readyState!==1) return;
+  const screen = hostScreenState();
+  const screenSig = JSON.stringify([screen.transition, screen.roundScreen, screen.dice, !!screen.timers]);
+  G.players.forEach(p=>{
+    if(p.idx===0 || !seatOnline(p.idx)) return;
+    const st = ON.sent[p.idx] || (ON.sent[p.idx] = {sig:'', ev:0, arts:new Set()});
+    const v = playerView(G, p.idx);
+    const lastN = v.events.length ? v.events[v.events.length-1].n : 0;
+    v.events = v.events.filter(e=>e.n > st.ev);
+    const arts = {};
+    packArts(v, st.arts, arts);
+    const body = JSON.stringify(v);
+    const sig = body.length + ':' + hashStr(body) + ':' + screenSig;
+    if(sig===st.sig) return;
+    const msg = '{"to":'+p.idx+',"data":{"t":"view","v":'+body+',"ui":'+JSON.stringify(screen)+',"arts":'+JSON.stringify(arts)+'}}';
+    if(msg.length > 1000000){ toast('Too much art to send in one go — put large sprites in the site’s art/ folder.'); return; }
+    try{ ON.ws.send(msg); st.sig = sig; st.ev = lastN; }catch(e){}
+  });
+  hostSaveSoon();
+}
+/* the clocks tick without a re-render: keep guests' copies honest */
+setInterval(()=>{
+  if(!isHost() || !G || !G.online || G.over || !ON.ws || ON.ws.readyState!==1) return;
+  const s = hostScreenState();
+  if(s.timers) relay({data:{t:'clock', timers:s.timers}}, 'all');
+}, 3000);
+
+/** Save the host's game whenever it is settled, to resume after a reload. */
+function hostSaveSoon(){
+  if(ON.saveT) return;                 // one pending save at a time: a busy game can't starve it
+  ON.saveT = setTimeout(()=>{
+    ON.saveT = null;
+    if(!isHost() || !G || !G.online) return;
+    const settled = !G.hold && !G.flipping && !(G.fxQueue && G.fxQueue.length) && !G.choice && !UI.animLock && !UI.fxWait && !UI.transition && !UI.roundScreen && !UI.flipAnim;   // the dice are only a show: the round has already begun
+    if(!settled) return hostSaveSoon();
+    try{ localStorage.setItem(HOSTGAME_KEY, JSON.stringify({code:ON.code, g:G, lobby:ON.lobby, roomSeats:ON.roomSeats, at:Date.now()})); }catch(e){}
+  }, 400);
+}
+function hostResume(saved){
+  const room = savedRoom();
+  if(!room || room.role!=='host') return false;
+  ON.role = 'host'; ON.code = room.code; ON.token = room.token;
+  let hg = null;
+  try{ hg = JSON.parse(localStorage.getItem(HOSTGAME_KEY)||'null'); }catch(e){}
+  if(hg && hg.code===room.code && hg.g){
+    G = hg.g; ON.lobby = hg.lobby; ON.roomSeats = hg.roomSeats || G.players.length;
+    adoptRng(G); UID_LIVE = G.uids;
+    UI.transition = null; UI.flipAnim = null; UI.autoflip = false; UI.drag = null; UI.sel = null;
+    UI.sheet = null; UI.gate = false; UI.botQueued = {}; UI.review = false;
+    fxReset();
+    NET.seat = 0; NET.send = null;
+    UI.screen = 'game';
+    setTimeout(()=>{ if(G && G.online) afterStateChange(); }, 300);
+  }else{
+    ON.lobby = defaultLobby(ON.roomSeats);
+    UI.screen = 'online';
+  }
+  joinRoom(room.code, room.token);
+  return true;
+}
+
+/* Long strings (uploaded images) go once per guest; views point at them. */
+const ART_MIN = 1500, ART_TAG = '\u0000art:';
+function hashStr(s){ let h = 2166136261; for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h>>>0).toString(36); }
+function packArts(o, have, out){
+  for(const k in o){
+    const x = o[k];
+    if(typeof x==='string' && x.length>=ART_MIN && x.startsWith('data:')){
+      const key = hashStr(x) + x.length.toString(36);
+      if(!have.has(key)){ have.add(key); out[key] = x; }
+      o[k] = ART_TAG + key;
+    }else if(x && typeof x==='object') packArts(x, have, out);
+  }
+}
+function unpackArts(o){
+  for(const k in o){
+    const x = o[k];
+    if(typeof x==='string' && x.startsWith(ART_TAG)) o[k] = ON.arts[x.slice(ART_TAG.length)] || '';
+    else if(x && typeof x==='object') unpackArts(x);
+  }
+  return o;
+}
+
+/* --- a guest ----------------------------------------------------------------- */
+
+function guestReceive(d){
+  if(d.t==='lobby'){
+    ON.lobby = d.lobby; ON.decks = d.decks || [];
+    if(d.reset || (!d.playing && G && G.isView && !G.over)){ G = null; UI.review = false; }
+    if(!G || d.reset){ UI.screen = 'online'; UI.sheet = null; }
+    ON.fresh = true;
+    render();
+    return;
+  }
+  if(d.t==='view'){ guestView(d); return; }
+  if(d.t==='clock'){ ON.timers = d.timers; ON.timersAt = Date.now(); return; }
+  if(d.t==='nope'){
+    if(d.why==='busy') return;                          // a tap during a beat: nothing to say
+    toast(d.why==='turn' ? 'Not your turn.' : d.why==='choice' ? 'Answer the open choice first.' : 'That move didn’t go through.');
+    return;
+  }
+  if(d.t==='closed'){
+    ON.intentional = true; leaveRoom();
+    UI.screen = 'online'; ON.error = 'The host ended the game and closed the room.';
+    render();
+  }
+}
+
+function guestView(d){
+  Object.assign(ON.arts, d.arts||{});
+  const v = unpackArts(d.v);
+  const first = ON.fresh || !G || !G.isView;
+  const evs = first ? [] : (v.events||[]).filter(e=>e.n > ON.lastEv);
+  const maxN = (v.events||[]).reduce((m,e)=>Math.max(m, e.n), ON.lastEv);
+  ON.lastEv = first ? Math.max(maxN, v.eventN||0) : maxN;
+  ON.fresh = false;
+  const onBoard = UI.screen==='game' && !first && animOn();
+
+  /* leaving and sliding play from where the card was: before the new view is drawn */
+  if(onBoard) evs.forEach(e=>{
+    if(e.k==='vanish' && e.uid) fxVanish({uid:e.uid, owner:e.owner});
+    else if(e.k==='slide' && e.uid) fxSlideStart({uid:e.uid});
+  });
+
+  const hadChoice = G && G.choice;
+  G = v; NET.seat = v.viewer;
+  if(UI.choicePeek && UI.choicePeek!==G.choice && !(hadChoice && G.choice && hadChoice.kind===G.choice.kind)) UI.choicePeek = null;
+  else if(UI.choicePeek) UI.choicePeek = G.choice;      // the same choice, in a fresh copy
+  const ui = d.ui || {};
+  UI.transition = ui.transition || null;
+  UI.roundScreen = ui.roundScreen || null;
+  UI.roundGo = null;
+  mirrorDice(ui.dice);
+  ON.timers = ui.timers || null; ON.timersAt = Date.now();
+  if(first){ UI.screen = 'game'; UI.sheet = null; }
+  if(UI.sel && !findCardByUid(UI.sel)) UI.sel = null;
+  if(UI.peek && UI.sheet==='peek' && !anyCardByUid(UI.peek.uid) && !UI.peek.preview){ UI.sheet = null; UI.peek = null; }
+  else if(UI.peek && UI.sheet==='peek' && !UI.peek.preview){ const fresh = anyCardByUid(UI.peek.uid); if(fresh) UI.peek = fresh; }
+
+  let flip = null;
+  if(onBoard) evs.forEach(e=>{
+    if(e.k==='arrive' && e.uid) fxArrive({uid:e.uid, owner:e.owner}, e.kind);
+    else if(e.k==='energy' && e.seat===G.viewer) fxEnergy(e.seat, e.n, e.from ? {uid:e.from} : null);
+    else if(e.k==='flip' && e.uid) flip = e.uid;
+  });
+  if(flip){
+    UI.flipAnim = flip;
+    clearTimeout(ON.flipT);
+    ON.flipT = setTimeout(()=>{ if(UI.flipAnim===flip){ UI.flipAnim = null; render(); } }, FLIP_MS);
+  }
+  render();
+  if(onBoard) evs.forEach(e=>{
+    if(e.k==='beam' && e.to && e.to.length){
+      const ctx = {uid:e.from, owner:e.seat};
+      startBeams(ctx, e.to.filter(Boolean));
+      e.to.filter(Boolean).forEach(u=>glowCard(u, casterColour(ctx)));
+    }
+  });
+  guestAfterView();
+}
+function mirrorDice(dice){
+  if(!dice){ if(UI.dice){ clearInterval(UI.diceSpin); UI.dice = null; } UI.diceGo = null; return; }
+  const wasRolling = UI.dice && !UI.dice.landed;
+  UI.dice = {round:dice.round, landed:dice.landed || !animOn()};
+  UI.diceGo = null;
+  if(!UI.dice.landed && !wasRolling){
+    clearInterval(UI.diceSpin);
+    UI.diceSpin = setInterval(()=>{ document.querySelectorAll('.die[data-rolling]').forEach(el=>{ el.innerHTML = pipsHTML(1 + uiRnd(6)); }); }, 75);
+  }
+  if(UI.dice.landed) clearInterval(UI.diceSpin);
+}
+/** "Turn the rest over", on a guest: one flip at a time, each after the last has landed. */
+function guestAfterView(){
+  const me = G && G.players[G.viewer];
+  const mine = me && G.phase==='reveal' && G.order[G.revealer]===me.idx;
+  if(!mine){ UI.autoflip = false; return; }
+  if(!UI.autoflip) return;
+  const down = faceDownOf(me);
+  if(!down.length){ UI.autoflip = false; return; }
+  if(G.hold || G.flipping || G.choice || UI.transition || UI.roundScreen || UI.dice) return;
+  const uid = down[0].card.uid;
+  if(ON.flipAsk && ON.flipAsk.uid===uid && Date.now()-ON.flipAsk.at < 2500) return;
+  ON.flipAsk = {uid, at:Date.now()};
+  setTimeout(()=>{ if(UI.autoflip && G && G.isView) dispatch({t:'flip', seat:me.idx, uid}); }, 260);
+}
+
+/* the host's clocks, as a guest shows them: counted down locally between updates */
+function netTimeLeft(t){
+  if(!t) return null;
+  return t.paused ? t.left : Math.max(0, t.left - (Date.now() - ON.timersAt));
+}
+function netTimerHTML(which, compact){
+  const t = ON.timers && ON.timers[which];
+  if(!t || !G) return '';
+  if(which==='choice' && G.choice && !G.choice.waiting && chooserOf(G.choice)!==G.viewer) return '';
+  const left = netTimeLeft(t);
+  return which==='turn'
+    ? `<span class="turn-timer ${left<=TIMER_WARN?'warn':''}" data-timer aria-label="Time left this turn">⏱ ${fmtClock(left)}</span>`
+    : `<span class="turn-timer choice-timer ${compact?'compact':''} ${left<=TIMER_WARN?'warn':''}" data-ctimer aria-label="Time left to choose">⏱ ${fmtClock(left)}</span>`;
+}
+function netTimerTick(){
+  if(!ON.timers) return;
+  [['turn','[data-timer]'],['choice','[data-ctimer]']].forEach(([k, sel])=>{
+    const t = ON.timers[k]; if(!t) return;
+    const left = netTimeLeft(t);
+    document.querySelectorAll(sel).forEach(el=>{ el.textContent = '⏱ '+fmtClock(left); el.classList.toggle('warn', left<=TIMER_WARN); });
+  });
+}
+
+/* --- screens ----------------------------------------------------------------- */
+
+function viewOnline(){
+  if(!onlineAvailable()) return `${topbar('Play online')}
+    <div class="page stack"><div class="callout">Online play works on the website copy of Territory, not a file opened from your computer. Deploy it (see DEPLOY.md) and open the address it gives you.</div></div>`;
+  if(inRoom() && ON.seat!=null && ON.lobby) return viewLobby();
+  if(inRoom()) return `${topbar('Play online')}<div class="page stack"><div class="net-wait"><span class="spinner"></span>${ON.status==='retry'?'Reconnecting to':'Connecting to'} room <b>${esc(ON.code||'')}</b>…</div>
+    <button class="btn ghost" data-on="leave">Cancel</button></div>`;
+  const saved = savedRoom();
+  const name = esc(LIB.settings.onlineName||'');
+  return `${topbar('Play online')}
+  <div class="page stack online-page">
+    ${ON.error?`<div class="callout">${esc(ON.error)}</div>`:''}
+    <label class="field"><span>Your name</span><input data-on-input="name" maxlength="24" placeholder="What the others will see" value="${name}" autocomplete="nickname"></label>
+    ${saved ? `<div class="card-panel online-resume">
+      <div class="row"><b>Room ${esc(saved.code)}</b><span class="muted tiny" style="margin-left:auto">${saved.role==='host'?'you were hosting':'you were '+esc(PNAMES[saved.seat]||'a player')}</span></div>
+      <div class="row" style="gap:8px;margin-top:10px">
+        <button class="btn primary" data-on="resume">${saved.role==='host'?'Resume hosting':'Rejoin'}</button>
+        <button class="btn ghost" data-on="forget">Forget it</button>
+      </div></div>` : ''}
+    <div class="card-panel">
+      <h3 class="op-h">Host a game</h3>
+      <p class="tiny muted" style="margin:0 0 10px">Make a room, then send its code or link to your friends. Your device runs the game; empty seats can be bots.</p>
+      <div class="row" style="gap:8px;align-items:flex-end">
+        <label class="field" style="flex:1"><span>Players</span>
+          <select data-on-input="seats">${[2,3,4].map(n=>`<option value="${n}" ${(UI.onSeats||2)===n?'selected':''}>${n}</option>`).join('')}</select></label>
+        <button class="btn primary" data-on="host" style="flex:1">Make a room</button>
+      </div>
+    </div>
+    <div class="card-panel">
+      <h3 class="op-h">Join a game</h3>
+      <div class="row" style="gap:8px;align-items:flex-end">
+        <label class="field" style="flex:1"><span>Room code</span>
+          <input data-on-input="code" class="code-input" maxlength="5" placeholder="ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(ON.joinCode||'')}"></label>
+        <button class="btn primary" data-on="join" style="flex:1">Join</button>
+      </div>
+    </div>
+    <p class="tiny muted">Everyone places at once on their own device, then cards turn over in order. Your deck comes from the host’s library.</p>
+  </div>`;
+}
+
+function viewLobby(){
+  const L = ON.lobby, host = isHost(), n = L.seats.length;
+  const decks = host ? LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})) : ON.decks;
+  const deckName = id => { const d = decks.find(x=>x.id===id); return d ? `${d.name} (${d.n})` : 'A deck'; };
+  const link = location.origin + location.pathname + '?room=' + ON.code;
+  const rows = Array.from({length:n}, (_,i)=>{
+    const s = ON.seats.find(x=>x.seat===i);
+    const me = i===ON.seat;
+    const status = me ? 'You' : !s ? (host ? 'Empty — a bot plays' : 'Waiting…') : s.online ? 'Here' : 'Away';
+    const canPick = me || (host && !s);
+    const deck = canPick
+      ? `<select data-on-input="deck" data-i="${i}" aria-label="Deck for ${esc(s?s.name:PNAMES[i])}">${decks.map(d=>`<option value="${d.id}" ${L.seats[i].deck===d.id?'selected':''}>${esc(d.name)} (${d.n})</option>`).join('')}</select>`
+      : `<span class="tiny muted">${esc(deckName(L.seats[i].deck))}</span>`;
+    return `<div class="lobby-seat ${s&&s.online||me?'here':''}" style="--pc:${PCOLORS[i]}">
+      <span class="dot"></span>
+      <div class="ls-name"><b>${esc(s ? s.name : (host ? 'Bot '+(i+1) : PNAMES[i]))}</b><span>${i===0?'Host · ':''}${status}</span></div>
+      <div class="ls-deck">${deck}</div>
+    </div>`;
+  }).join('');
+  const others = ON.seats.filter(s=>s.seat!==0 && s.online).length;
+  const opts = (arr, cur, fmt) => arr.map(v=>`<option value="${v}" ${cur===v?'selected':''}>${fmt?fmt(v):v}</option>`).join('');
+  const settings = host ? `<div class="grid2">
+      <label class="field"><span>Planets</span><select data-on-input="planets">${opts([3,4,5,6,7,8].filter(k=>k<=LIB.planets.length), L.planets)}</select></label>
+      <label class="field"><span>Rounds</span><select data-on-input="rounds">${opts([4,5,6,7,8], L.rounds)}</select></label>
+      <label class="field"><span>Turn timer</span><select data-on-input="turnTimer">${opts([0,30,45,60,90,120], L.turnTimer, v=>v?fmtClock(v*1000):'Off')}</select></label>
+      ${L.turnTimer ? `<label class="field"><span>Ability choice timer</span><select data-on-input="choiceTimer">${opts(CHOICE_PRESETS.map(x=>x[0]), L.choiceTimer, v=>fmtClock(v*1000))}</select></label>` : '<div></div>'}
+    </div>` : `<p class="tiny muted" style="margin:0">${L.planets} planets · ${L.rounds} rounds · ${L.turnTimer ? fmtClock(L.turnTimer*1000)+' turns, '+fmtClock(L.choiceTimer*1000)+' choices' : 'no turn timer'}</p>`;
+  return `${topbar('Room '+ON.code)}
+  <div class="page stack online-page">
+    ${netStatusHTML()}
+    <div class="room-code" aria-label="Room code ${ON.code.split('').join(' ')}">
+      <span class="rc-label">Room code</span>
+      <span class="rc-code">${ON.code.split('').map(c=>`<i>${c}</i>`).join('')}</span>
+      <div class="row" style="gap:8px;justify-content:center">
+        <button class="btn sm" data-on="copylink" data-v="${esc(link)}">Copy invite link</button>
+        ${navigator.share ? `<button class="btn sm ghost" data-on="share" data-v="${esc(link)}">Share…</button>` : ''}
+      </div>
+    </div>
+    <div class="lobby-seats">${rows}</div>
+    ${settings}
+    ${host
+      ? `<button class="btn primary wide" data-on="start" ${others?'':'disabled'}>${others ? 'Start the game' : 'Waiting for someone to join…'}</button>
+         ${others && others < n-1 ? `<p class="tiny muted" style="margin:-4px 0 0;text-align:center">Empty seats are played by bots.</p>` : ''}`
+      : `<div class="net-wait"><span class="spinner"></span>Waiting for ${esc(seatName(0))} to start…</div>`}
+    <button class="btn ghost" data-on="leave">${host?'Close the room':'Leave the room'}</button>
+  </div>`;
+}
+
+/** A line across the top when the connection isn't simply fine. */
+function netStatusHTML(){
+  if(!inRoom()) return '';
+  if(ON.status==='retry' || ON.status==='connecting') return `<div class="net-banner warn" role="status"><span class="spinner"></span>Reconnecting…</div>`;
+  if(!isHost() && ON.seats.length && !seatOnline(0)) return `<div class="net-banner warn" role="status"><span class="spinner"></span>${esc(seatName(0))} (the host) lost connection. Waiting for them…</div>`;
+  if(isHost() && G && G.online && !G.over){
+    const gone = G.players.filter(p=>p.idx!==0 && (p.kind==='human' || p.standIn) && ON.seats.some(s=>s.seat===p.idx) && !seatOnline(p.idx));
+    if(gone.length) return gone.map(p=>`<div class="net-banner" role="status">
+      <span class="dot" style="--pc:${PCOLORS[p.idx]}"></span><span class="nb-txt"><b>${esc(p.name)}</b> ${p.standIn?'is away — a bot is playing for them.':'lost connection.'}</span>
+      ${p.standIn ? '' : `<button class="btn sm" data-on="standin" data-i="${p.idx}">Let a bot play</button>`}
+    </div>`).join('');
+  }
+  return '';
+}
+
+/* --- taps and edits ------------------------------------------------------------ */
+
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-on]');
+  if(!t) return;
+  const a = t.dataset.on;
+  switch(a){
+    case 'open': ON.error = ''; UI.screen = 'online'; UI.sheet = null; render(); break;
+    case 'host': if(!onlineName()) return askName(); createRoom(UI.onSeats||2); break;
+    case 'join': if(!onlineName()) return askName(); ON.role = 'guest'; joinRoom(ON.joinCode); break;
+    case 'resume': {
+      const r = savedRoom(); if(!r) break;
+      if(r.role==='host') hostResume(); else { ON.role = 'guest'; joinRoom(r.code, r.token); }
+      break;
+    }
+    case 'forget': forgetRoom(); render(); break;
+    case 'leave': leaveRoom(); UI.screen = 'online'; render(); break;
+    case 'start': if(isHost()) startOnlineGame(); break;
+    case 'copylink': copyText(t.dataset.v, 'Invite link'); break;
+    case 'share': navigator.share({title:'Territory', text:'Join my game of Territory: room '+ON.code, url:t.dataset.v}).catch(()=>{}); break;
+    case 'standin': if(isHost()){ dispatch({t:'standin', seat:0, target:+t.dataset.i, on:true}); render(); } break;
+    case 'lobby': if(isHost()) hostBackToLobby(); break;
+    case 'endgame': UI.sheet = null; leaveRoom(); UI.screen = 'title'; render(); break;
+    case 'backtoroom': UI.screen = G && (G.online || G.isView) ? 'game' : 'online'; render(); break;
+  }
+});
+function askName(){
+  ON.error = 'Put in a name first, so the others know who you are.'; render();
+  const el = document.querySelector('[data-on-input="name"]'); if(el) el.focus();
+}
+document.addEventListener('input', e=>{
+  const el = e.target, k = el.dataset && el.dataset.onInput;
+  if(!k) return;
+  if(k==='name'){ LIB.settings.onlineName = el.value.slice(0,24); saveSoon(); return; }
+  if(k==='code'){ ON.joinCode = el.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5); if(el.value!==ON.joinCode) el.value = ON.joinCode; return; }
+});
+document.addEventListener('change', e=>{
+  const el = e.target, k = el.dataset && el.dataset.onInput;
+  if(!k || k==='name' || k==='code') return;
+  if(k==='seats'){ UI.onSeats = +el.value; return; }
+  if(k==='deck'){
+    const i = +el.dataset.i;
+    if(isHost()){ ON.lobby.seats[i].deck = el.value; hostSync(); }
+    else { ON.lobby.seats[i].deck = el.value; relay({data:{t:'deck', id:el.value}}); }
+    render(); return;
+  }
+  if(isHost() && ON.lobby && ['planets','rounds','turnTimer','choiceTimer'].includes(k)){ ON.lobby[k] = +el.value; hostSync(); render(); }
+});
+
+/* A link with ?room=CODE opens the join screen with the code filled in, or
+   goes straight back in if this device already holds a seat there. A reload
+   while in a room goes straight back in, too. */
+function onlineBoot(){
+  if(!onlineAvailable()) return;
+  const code = (new URLSearchParams(location.search).get('room')||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5);
+  const saved = savedRoom();
+  if(code){
+    history.replaceState(null, '', location.pathname);
+    if(saved && saved.code===code){ if(saved.role==='host') hostResume(); else { ON.role = 'guest'; UI.screen = 'online'; joinRoom(code, saved.token); } return; }
+    ON.joinCode = code; UI.screen = 'online'; render();
+    return;
+  }
+  /* reloaded mid-room: straight back in */
+  if(saved && saved.code){ if(saved.role==='host') hostResume(); else { ON.role = 'guest'; UI.screen = 'online'; joinRoom(saved.code, saved.token); } }
+}
+
+/* ------------------------------------------------------------------
    BOOT
    ------------------------------------------------------------------ */
 
@@ -6990,6 +7690,7 @@ if(!hadSaved) fetchShippedLibrary().then(data=>{
   adoptLibrary(data); fillSettings(); save(); render();
 });
 downloadsCap();   // ask early, so the first Download doesn't wait on it
+onlineBoot();
 
 window.addEventListener('pagehide', ()=>{ clearTimeout(saveTimer); save(); });
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden'){ clearTimeout(saveTimer); save(); } });

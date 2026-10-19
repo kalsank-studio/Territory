@@ -18,7 +18,7 @@
                    to the host.
      "ping"        answered "pong" without waking the room (keep-alive)
    and receives JSON:
-     {sys:'welcome', seat, token, host, seats}   you're in; keep the token
+     {sys:'welcome', seat, token, host, size, seats}   you're in; keep the token
      {sys:'seats', seats, joined?|left?}         someone came or went
      {from, data}                                a relayed message
      {sys:'error', why}                          something it couldn't relay
@@ -149,7 +149,7 @@ export class Room extends DurableObject {
     server.serializeAttachment({ seat: me.seat });
 
     const seats = await this.seatList();
-    server.send(JSON.stringify({ sys: 'welcome', seat: me.seat, token: me.token, host: 0, code: room.code, seats }));
+    server.send(JSON.stringify({ sys: 'welcome', seat: me.seat, token: me.token, host: 0, code: room.code, size: room.seats, seats }));
     this.broadcast({ sys: 'seats', seats, joined: me.seat }, server);
     await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: client });
