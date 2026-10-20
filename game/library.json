@@ -325,7 +325,7 @@
    "fx": [
     {
      "v": "givePower",
-     "t": "yoursElsewhere",
+     "t": "yoursAll",
      "n": 1
     }
    ],
@@ -713,7 +713,7 @@
    "power": 3,
    "art": {
     "t": "emoji",
-    "v": "⚡"
+    "v": "🌩️"
    },
    "fx": [
     {
@@ -771,10 +771,9 @@
     {
      "v": "givePower",
      "t": "self",
-     "n": 1,
+     "n": 2,
      "when": "activate",
-     "actCost": 1,
-     "actUses": 8
+     "actCost": 1
     }
    ],
    "token": false,
@@ -831,7 +830,7 @@
    "id": "card-38",
    "name": "Divine Crypt",
    "cost": 5,
-   "power": 6,
+   "power": 8,
    "art": {
     "t": "emoji",
     "v": "🪦"
@@ -1268,28 +1267,6 @@
    "rarity": "elite"
   },
   {
-   "id": "card-55",
-   "name": "Rambo",
-   "cost": 3,
-   "power": 4,
-   "art": {
-    "t": "emoji",
-    "v": "🐏"
-   },
-   "fx": [
-    {
-     "v": "move",
-     "dest": "random",
-     "target": {
-      "player": "choose",
-      "here": true,
-      "rule": "choice"
-     }
-    }
-   ],
-   "token": false
-  },
-  {
    "id": "card-56",
    "name": "Queen Joy",
    "cost": 5,
@@ -1391,7 +1368,7 @@
      "v": "burn",
      "n": 1,
      "when": "activate",
-     "actCost": 1,
+     "actCost": 0,
      "actUses": 2,
      "target": {
       "player": "choose",
@@ -1402,6 +1379,80 @@
    ],
    "token": false,
    "rarity": "elite"
+  },
+  {
+   "id": "card-61",
+   "name": "Boomerang",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🪃"
+   },
+   "fx": [
+    {
+     "v": "recall",
+     "t": "self",
+     "when": "activate",
+     "actCost": 0,
+     "actUses": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-62",
+   "name": "Siren",
+   "cost": 3,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🧜‍♀️"
+   },
+   "fx": [
+    {
+     "v": "recall",
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     },
+     "optional": true
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-63",
+   "name": "Merlin",
+   "cost": 4,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🧙‍♂️"
+   },
+   "fx": [
+    {
+     "v": "recall",
+     "when": "activate",
+     "actCost": 1,
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "choice"
+     },
+     "then": true
+    },
+    {
+     "v": "gainEnergy",
+     "n": 1,
+     "when": "activate",
+     "actCost": 1,
+     "nFrom": "prevCost"
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
   }
  ],
  "tokens": [
@@ -1978,14 +2029,13 @@
     "card-54",
     "card-5",
     "card-24",
-    "card-55",
     "card-56",
     "card-57",
     "card-59",
-    "card-59",
     "card-58",
     "card-60",
-    "card-56"
+    "card-56",
+    "card-59"
    ]
   },
   {
@@ -2046,7 +2096,6 @@
     "card-49",
     "card-50",
     "card-56",
-    "card-55",
     "card-59",
     "card-58"
    ]
