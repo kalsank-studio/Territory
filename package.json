@@ -1,13 +1,13 @@
 {
   "name": "territory",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Territory card battler: the game page and its online room relay, on Cloudflare Workers.",
   "scripts": {
     "build": "node build.js",
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
-    "test": "node test/test-relay.mjs && node test/test-accounts.mjs && node test/test-games.js 1",
+    "test": "node test/test-relay.mjs && node test/test-accounts.mjs && node test/test-social.mjs && node test/test-games.js 1",
     "library": "node build-library.js",
     "test:online": "python3 test/test-online.py http://127.0.0.1:8787/"
   },

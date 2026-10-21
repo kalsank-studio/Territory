@@ -93,7 +93,7 @@ async function playGame(opts = {}){
     if(st.over) break;
     if(st.gate){ const b = env.doc.querySelector('[data-act="ungate"]'); if(b){ click(env, b); actions++; idle = 0; continue; } }
     if(st.choice){
-      const sels = ['[data-act="pickdiscard"]','[data-act="pickplayer"]','[data-act="movedest"]','[data-act="pickmode"]:not([disabled])','[data-act="targetcard"]'];
+      const sels = ['[data-act="pickdiscard"]','[data-act="pickplayer"]','[data-act="movedest"]','[data-act="pickmode"]:not([disabled])','[data-act="targetcard"]','[data-act="pickslot"]','[data-act="pickoptional"]'];
       const opt = sels.flatMap(s => all(env, s));
       if(opt.length){ click(env, opt[Math.floor(R()*opt.length)]); actions++; idle = 0; continue; }
     }

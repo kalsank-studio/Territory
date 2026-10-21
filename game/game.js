@@ -343,7 +343,9 @@ function blankLibrary(){
 
 let LIB = null;   // populated at boot, after the helpers below are defined
 
+var RP_LIB_SWAPPED = false;   // a replay has borrowed LIB: nothing it does is saved
 function save(){
+  if(RP_LIB_SWAPPED) return;
   try{ localStorage.setItem(KEY, JSON.stringify(LIB)); }
   catch(e){ console.warn('Could not save library', e); }
 }
@@ -501,7 +503,7 @@ function condText(cond){
 function condShort(cond){
   if(!cond || cond.stat==='any') return 'Any';
   if(cond.stat==='winner') return '\u{1F3C6}';
-  return (cond.stat==='cost' ? '\u26A1' : '\u2726') + OPSYM[cond.op] + cond.val;
+  return (cond.stat==='cost' ? '\u26A1' : '\u{1F4AA}') + OPSYM[cond.op] + cond.val;
 }
 /* 'winner' is a cross-player comparison resolved once per slot in harvest(),
    not a per-card check — so on its own it never matches any single card. */
@@ -547,7 +549,7 @@ function condFromAttr(v){
   return {stat:bits[0], op:bits[1], val:+bits[2]};
 }
 
-function rewText(r){ return r.type==='energy' ? '+'+r.amount+' \u26A1' : r.type==='draw' ? '+'+r.amount+' \u{1F0A0}' : '\u2014'; }
+function rewText(r){ return r.type==='energy' ? '+'+r.amount+' \u26A1' : r.type==='draw' ? '+'+r.amount+' \u{1F0CF}' : '\u2014'; }
 function rewLong(r){ return r.type==='energy' ? '+'+r.amount+' Energy' : r.type==='draw' ? 'Draw '+r.amount : 'No reward'; }
 
 /** The noun phrase for a single-card target: who owns the eligible cards,
@@ -1744,13 +1746,14 @@ function pause(title, sub, next, playerIdx){
   }, PAUSE);
 }
 /* True whenever the board should not accept input. */
-function busy(){ return !!(UI.transition || UI.flipAnim || UI.animLock || UI.fxWait || UI.roundScreen || UI.dice || (G && G.choice)); }
+function busy(){ return !!(UI.transition || UI.flipAnim || UI.animLock || UI.fxWait || UI.roundScreen || UI.dice || UI.intro || UI.intro || (G && G.choice)); }
 
 /** How placement runs for a given table. Pass-the-device play always takes
     turns — two people can't place at once on one screen. Simultaneous
     placement is for tables where each human has their own device (online), and
     can be tried locally against bots from setup. */
 function placementModeFor(s, kinds){
+  if(s.forceSimul!=null) return s.forceSimul ? 'simultaneous' : 'turns';
   const humans = kinds.filter(k=>k==='human').length;
   if(s.online) return 'simultaneous';
   return (s.placement==='simultaneous' && humans<=1) ? 'simultaneous' : 'turns';
@@ -1768,16 +1771,18 @@ function newGame(opts){
   const seed = (s.seed!=null ? (s.seed>>>0) : newSeed()) || 1;
   const rng = {s: seed}, botRng = {s: (seed ^ 0x9E3779B9) >>> 0 || 7}, uids = {n:0};
   RNG_LIVE = rng; UID_LIVE = uids;                 // everything below draws from this game's streams
-  const planetPool = shuffle(LIB.planets);
+  const planetPool = s.planetOrder ? s.planetOrder.map(id=>LIB.planets.find(p=>p.id===id)).filter(Boolean) : shuffle(LIB.planets);
   const planetCount = clamp(s.planets|0, 1, Math.max(1, LIB.planets.length));
 
   const players = [];
   for(let i=0;i<n;i++){
     const deck = deckById(s.deckOf[i] || LIB.decks[0].id);
-    const cards = (deck.cards||[]).map(id=>defById(id)).filter(Boolean).map(d=>instance(d,i));
+    /* A stacked deck (the tutorial) is drawn in the order given; any other is shuffled. */
+    const stack = s.stacks && s.stacks[i];
+    const cards = (stack || deck.cards || []).map(id=>defById(id)).filter(Boolean).map(d=>instance(d,i));
     players.push({
       idx:i, name:(s.names && s.names[i]) || (!s.names && i===firstHumanOf(s, n) && profileName()) || PNAMES[i], kind:(s.kinds[i]||'human'),
-      deck:shuffle(cards), hand:[], energy:0, planned:0, placed:[]
+      deck: stack ? cards.reverse() : shuffle(cards), hand:[], energy:0, planned:0, placed:[]
     });
   }
 
@@ -1802,13 +1807,27 @@ function newGame(opts){
     seed, rng, botRng, uids,              // the streams above; same seed + same commands = same game
     simul: placementModeFor(s, players.map(p=>p.kind))==='simultaneous',
     online: !!s.online,
-    mulligans: s.mulligan!==false,         // one mulligan each, in round 1
+    mulligans: s.mulligan!==false && !s.tutorial,   // one mulligan each, in round 1
+    tutorial: !!s.tutorial,
     gameId: Date.now().toString(36) + uiRnd(1e9).toString(36),   // for the match history; not part of the rules
     cmdLog:[],     // every accepted command, in order: what a replay or a server re-applies
     events:[],     // what happened, for the screen to animate: {n, k, …} (see emit)
     eventN:0
   };
   G.players.forEach(p=>{ p.locked = false; });
+  /* For the Profile's stats: what each seat drew each round, the Power it held
+     at the end of each round, and how often each slot's condition was met. */
+  G.track = {
+    draws: players.map(()=>[]), power: players.map(()=>[]),
+    slots: planets.map(pl=>players.map(()=>pl.slots.map(()=>[0,0])))
+  };
+  /* Everything a replay needs to rebuild this game from its command log. */
+  G.setup = {
+    seed, players:n, kinds: players.map(p=>p.kind), names: players.map(p=>p.name),
+    deckOf: players.map((p,i)=>(deckById(s.deckOf[i] || LIB.decks[0].id)||{}).id),
+    planets: planetCount, rounds: G.rounds, mulligan: G.mulligans, simul: G.simul, sandbox: G.sandbox,
+    lib: replayLibSnapshot(players.map((p,i)=>deckById(s.deckOf[i] || LIB.decks[0].id)))
+  };
 
   UI.transition = null; UI.flipAnim = null; UI.autoflip = false;
   UI.drag = null; UI.review = false; UI.peekBoard = false; UI.sheet = null;
@@ -1899,6 +1918,7 @@ function drawCard(p, silent, quiet){
   if(!p.deck.length){ if(!silent) say(`${p.name} has no cards left to draw.`, p.idx); return null; }
   const card = p.deck.pop();
   p.hand.push(card);
+  if(!quiet && G.track){ const t = G.track.draws[p.idx]; t[G.round] = (t[G.round]||0) + 1; }
   if(!quiet) fxArrive(card, 'draw');
   if(!quiet) fireTrigger(card, 'drawn', {owner:p.idx, planetIdx:null, slotIdx:null, uid:card.uid});
   return card;
@@ -1907,6 +1927,7 @@ function drawCard(p, silent, quiet){
 /* --- PLACEMENT ------------------------------------------------- */
 
 function startRound(){
+  if(G.round>=1) trackPower();
   G.round++;
   if(G.round>1) logRound();
   G.pending = (G.pending||[]).filter(pk=>pk.until==null || pk.until===G.round);   // "this round" effects lapse
@@ -1956,6 +1977,7 @@ function payReward(rew, p, card){
 }
 
 function harvest(){
+  G.paid = {};                                   // "planet:side:slot" that paid this round, for the green outline
   G.planets.forEach(pl=>{
     pl.slots.forEach((slot,si)=>{
       /* A 'winner' slot is a single cross-player comparison, not a per-card
@@ -1964,18 +1986,22 @@ function harvest(){
       if(slot.cond.stat==='winner'){
         const entries = pl.board.map((row,pi)=>({pi, card:row[si]})).filter(e=>e.card);
         if(!entries.length) return;
+        const tw = G.track && G.track.slots[G.planets.indexOf(pl)];
         const best = Math.max(...entries.map(e=>powerOf(e.card)));
         const winners = entries.filter(e=>powerOf(e.card)===best);
+        if(tw) entries.forEach(e=>{ tw[e.pi][si][0]++; if(winners.length===1 && winners[0].pi===e.pi) tw[e.pi][si][1]++; });
         if(winners.length!==1) return;
         const w = winners[0], p = G.players[w.pi];
-        if(payReward(slot.rew, p, w.card)) say(`${p.name} harvests ${rewLong(slot.rew)} from ${w.card.name} on ${pl.name} \u2014 the strongest card in that slot.`, w.pi);
+        if(payReward(slot.rew, p, w.card)){ G.paid[G.planets.indexOf(pl)+':'+w.pi+':'+si] = 1; say(`${p.name} harvests ${rewLong(slot.rew)} from ${w.card.name} on ${pl.name} \u2014 the strongest card in that slot.`, w.pi); }
         return;
       }
       pl.board.forEach((row,pi)=>{
         const card = row[si];
+        const tr = card && G.track && G.track.slots[G.planets.indexOf(pl)];
+        if(tr){ tr[pi][si][0]++; if(condMet(slot.cond, card)) tr[pi][si][1]++; }
         if(!card || !condMet(slot.cond, card)) return;
         const p = G.players[pi];
-        if(payReward(slot.rew, p, card)) say(`${p.name} harvests ${rewLong(slot.rew)} from ${card.name} on ${pl.name}.`, pi);
+        if(payReward(slot.rew, p, card)){ G.paid[G.planets.indexOf(pl)+':'+pi+':'+si] = 1; say(`${p.name} harvests ${rewLong(slot.rew)} from ${card.name} on ${pl.name}.`, pi); }
       });
     });
   });
@@ -2235,7 +2261,7 @@ function resolveFlip(uid){
   markInPlay(card);
   emit('flip', {uid:card.uid, seat:p.idx, p:planetIdx, s:slotIdx});
   UI.justFlipped = card.uid;
-  say(`${p.name} reveals ${card.name} (${card.cost}\u26A1 / ${powerOf(card)}\u2726) on ${G.planets[planetIdx].name}.`, p.idx);
+  say(`${p.name} reveals ${card.name} (${card.cost}\u26A1 / ${powerOf(card)}\u{1F4AA}) on ${G.planets[planetIdx].name}.`, p.idx);
 
   /* This is the moment a card counts as "played". Anything waiting for "the
      next card this player plays" fires now, before the card's own ability \u2014
@@ -2436,7 +2462,7 @@ function timerHTML(){
   return `<span class="turn-timer ${left<=TIMER_WARN?'warn':''}" data-timer aria-label="Time left this turn">\u23F1 ${fmtClock(left)}</span>`;
 }
 function timerPaused(){
-  return !!(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.flipAnim || UI.animLock || UI.fxWait || UI.screen!=='game');
+  return !!(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.intro || UI.flipAnim || UI.animLock || UI.fxWait || UI.screen!=='game');
 }
 
 /* --- the choice timer --------------------------------------------------------
@@ -2510,7 +2536,7 @@ function tickTimer(){
 function autoCompleteTurn(){
   if(G && G.online && G.simul && G.phase==='placement'){
     if(!UI.timer || UI.timer.key!==timerKey()) return;
-    if(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.flipAnim || UI.animLock || UI.fxWait) return;
+    if(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.intro || UI.flipAnim || UI.animLock || UI.fxWait) return;
     if(G.choice){ autoResolveChoice(); return; }
     UI.sel = null; UI.drag = null; DRAG.uid = null;
     G.players.filter(q=>q.kind==='human' && !q.locked).forEach(q=>dispatch({t:'lock', seat:q.idx}));
@@ -2520,7 +2546,7 @@ function autoCompleteTurn(){
   if(!p || p.kind!=='human' || !UI.timer || UI.timer.key!==timerKey()) return;
   if(UI.sheet==='peek'){ UI.sheet = null; UI.peek = null; }
   if(G.choice){ autoResolveChoice(); return; }
-  if(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.flipAnim || UI.animLock || UI.fxWait) return;
+  if(UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.intro || UI.flipAnim || UI.animLock || UI.fxWait) return;
   if(G.phase==='placement'){
     UI.sel = null; UI.drag = null; DRAG.uid = null;
     dispatch({t:'lock', seat:p.idx});
@@ -2557,6 +2583,11 @@ setInterval(()=>{ try{ if(typeof G!=='undefined' && G) tickTimer(); }catch(e){ c
 const DICE_ROLL_MS = Math.max(PAUSE * 0.9, 30), DICE_HOLD_MS = Math.max(PAUSE * 1.4, 30);   // the hold also lets the standings be read
 function rollForFirst(){
   let rolls, best, rerolls = 0;
+  if(G.tutorial){                                  // the lesson always lets you reveal first
+    G.first = 0; G.dice = {round:G.round, rolls:G.players.map((_,i)=>i===0?6:2+((G.round+i)%3)), rerolls:0};
+    say(`Roll for first: ${G.players.map((p,i)=>p.name+' '+G.dice.rolls[i]).join(', ')} \u2014 ${G.players[0].name} goes first.`);
+    return;
+  }
   for(;;){
     rolls = G.players.map(()=>1 + rnd(6));
     best = Math.max(...rolls);
@@ -2570,6 +2601,7 @@ function rollForFirst(){
 function showDice(){
   /* Only on a real screen; the headless tests have no layout to show it on. */
   if(typeof document==='undefined' || !(document.documentElement.getBoundingClientRect().width > 0)) return;
+  if(G.round===1 && introWanted()){ showIntro(showDice); return; }
   const game = G, epoch = G.epoch, spin = animOn();
   let done = false;
   clearInterval(UI.diceSpin); clearTimeout(UI.diceT);
@@ -2598,6 +2630,39 @@ function showDice(){
     UI.diceT = setTimeout(land, DICE_ROLL_MS);
   }else UI.diceT = setTimeout(finish, DICE_ROLL_MS + DICE_HOLD_MS);
 }
+/* --- the opening: who's playing, then the table being laid -------------
+   Once per game, before the first roll: everyone's name in their colour,
+   then the planets slide into place and the opening hands are dealt. */
+const INTRO_VS_MS = 1900, INTRO_DEAL_MS = 1900;
+function introWanted(){
+  return animOn() && !G.isView && !G.tutorial && UI.introSeen!==G.gameId;
+}
+function showIntro(next){
+  const game = G, epoch = G.epoch;
+  UI.introSeen = G.gameId;
+  clearTimeout(UI.introT);
+  const still = ()=>G===game && G.epoch===epoch && UI.intro;
+  const done = ()=>{ if(!still()) return; clearTimeout(UI.introT); UI.intro = null; UI.introGo = null; next(); };
+  const deal = ()=>{ if(!still()) return; clearTimeout(UI.introT);
+    UI.intro = {stage:'deal'}; UI.introGo = done; render(); UI.introT = setTimeout(done, INTRO_DEAL_MS); };
+  UI.intro = {stage:'vs'}; UI.introGo = deal;
+  render();
+  UI.introT = setTimeout(deal, INTRO_VS_MS);
+}
+function introHTML(){
+  const ps = G.players;
+  const seat = (p,i)=>`<div class="iv-seat" style="--pc:${PCOLORS[i]};--d:${i*140}ms">
+      <span class="iv-orb">${esc((p.name||'?').trim().charAt(0).toUpperCase())}</span>
+      <b class="iv-name">${esc(p.name)}</b>
+      <span class="iv-kind">${p.kind==='bot'?'Bot':(G.online?'Online':'Player')} \u00B7 Player ${i+1}</span></div>`;
+  const body = ps.map((p,i)=>(i?`<span class="iv-vs" style="--d:${i*140-70}ms">vs</span>`:'')+seat(p,i)).join('');
+  return `<div class="intro-vs ${ps.length>2?'many':''}" data-ak="intro:vs" data-act="introgo" role="dialog" aria-label="${esc(ps.map(p=>p.name).join(' versus '))}">
+    <div class="iv-inner">
+      <div class="iv-kicker">Territory \u00B7 ${G.planets.length} planets \u00B7 ${G.rounds} rounds</div>
+      <div class="iv-seats">${body}</div>
+      <div class="rs-tap">Tap to continue</div>
+    </div></div>`;
+}
 const PIPS = {1:[4], 2:[0,8], 3:[0,4,8], 4:[0,2,6,8], 5:[0,2,4,6,8], 6:[0,2,3,5,6,8]};
 const pipsHTML = n => Array.from({length:9}, (_,i)=>`<i class="${PIPS[n].includes(i)?'on':''}"></i>`).join('');
 /** Planets each player is winning right now: most Power there, no tie. */
@@ -2623,7 +2688,7 @@ function diceHTML(){
     return `<span class="rs-planet" style="--po:${pl.hue};--pc:${lead==null?'var(--line-2)':PCOLORS[lead]}" title="${esc(pl.name)}">
       <span class="rs-orb">${artHTML(pl.art, pl.name)}</span></span>`;
   }).join('');
-  return `<div class="dice-screen round-open ${landed?'landed':''}" data-act="dicego" role="dialog" aria-label="Round ${G.round} of ${G.rounds}">
+  return `<div class="dice-screen round-open ${landed?'landed':''}" data-ak="dice:${G.round}" data-act="dicego" role="dialog" aria-label="Round ${G.round} of ${G.rounds}">
     <div class="rs-inner">
       <div class="rs-title">Round <em>${G.round}</em><span> of ${G.rounds}</span></div>
       ${last?'<div class="rs-final">Final round</div>':''}
@@ -2682,7 +2747,7 @@ function roundScreenHTML(){
       <span class="rs-score">${sc.map((v,i)=>`<b style="color:${PCOLORS[i]}">${v}</b>`).join('<i>\u00B7</i>')}</span></span>`;
   }).join('');
   const lastRound = rs.next===G.rounds;
-  return `<div class="round-screen" data-act="roundgo" role="dialog" aria-label="Round ${rs.next}">
+  return `<div class="round-screen" data-ak="rs:${rs.ended}" data-act="roundgo" role="dialog" aria-label="Round ${rs.next}">
     <div class="rs-inner">
       <div class="rs-kicker">Round ${rs.ended} is over</div>
       <div class="rs-title">Round <em>${rs.next}</em><span> of ${G.rounds}</span></div>
@@ -2706,7 +2771,7 @@ function roundScreenHTML(){
     now, in this order. Same frame as the round screen, a different note. */
 function gameEndScreenHTML(rs){
   const cards = rs.uids.map(uid=>findCardByUid(uid)).filter(Boolean);
-  return `<div class="round-screen game-end" data-act="roundgo" role="dialog" aria-label="Game End effects">
+  return `<div class="round-screen game-end" data-ak="ge:${rs.ended}" data-act="roundgo" role="dialog" aria-label="Game End effects">
     <div class="rs-inner">
       <div class="rs-kicker">Round ${rs.ended} of ${G.rounds} is over</div>
       <div class="rs-title"><em>Game End</em></div>
@@ -2732,7 +2797,13 @@ function planetScore(pl){
   return pl.board.map(row => row.reduce((s,c)=> s + (c && c.faceUp ? powerOf(c) : 0), 0));
 }
 
+/** The Power each seat holds on the table at the end of this round. */
+function trackPower(){
+  if(!G.track || G.round<1) return;
+  G.players.forEach((p,i)=>{ G.track.power[i][G.round] = G.planets.reduce((t,pl)=>t + planetScore(pl)[i], 0); });
+}
 function finishGame(){
+  trackPower();
   const rows = G.planets.map(pl=>{
     const scores = planetScore(pl);
     const best = Math.max(...scores);
@@ -2869,6 +2940,17 @@ function cmdCheck(cmd){
 
 /** The one way in. Returns {ok, why}. */
 function dispatch(cmd){
+  if(UI.rp && UI.replaying && !UI.rpApplying) return {ok:false, why:'replay'};   // a replay plays itself
+  const coached = !!(G && G.tutorial && TUT.active && cmd && cmd.seat===0);
+  if(coached && !tutAllows(cmd)){ tutNudge(); return {ok:false, why:'tutorial'}; }
+  if(coached){
+    const r = dispatchCore(cmd);
+    if(r.ok){ TUT.step++; TUT.min = false; }
+    return r;
+  }
+  return dispatchCore(cmd);
+}
+function dispatchCore(cmd){
   if(G && G.online && NET.send && !NET.applying){
     /* A guest checks a move against its own view first, so a tap that
        can't work says so at once instead of after a round trip. */
@@ -3038,10 +3120,11 @@ function uiSeat(){
        working queues, and log lines and events meant for someone else.
    A device can draw a view exactly like a full game: set G to it and render.
    ------------------------------------------------------------------ */
-const ENGINE_ONLY = ['rng','botRng','seed','cmdLog','fxQueue','trigBuf','fxAfter'];
+const ENGINE_ONLY = ['rng','botRng','seed','cmdLog','fxQueue','trigBuf','fxAfter','setup'];
 function playerView(state, seat){
   const g = state || G;
   const v = JSON.parse(JSON.stringify(g, function(k, val){ return (this===g && ENGINE_ONLY.includes(k)) ? undefined : val; }));
+  if(g.over && g.setup) v.replay = replayBundle(g);     // once it's over nothing is secret: everyone gets the replay
   const ch = g.choice;
   const chooser = chooserOf(ch);
   const shownHand = ch && ch.kind==='discard' && chooser===seat ? ch.player : null;
@@ -3099,7 +3182,7 @@ function emit(k, data){
     give the same string. Used to check a replay matches the original. */
 function stateDigest(g){
   g = g || G;
-  const skip = ['log','events','eventN','botRng','cmdLog','epoch','hold','flipping','dice','gameId'];
+  const skip = ['log','events','eventN','botRng','cmdLog','epoch','hold','flipping','dice','gameId','setup','replay'];
   return JSON.stringify(g, function(k, val){ return (this===g && skip.includes(k)) ? undefined : val; });
 }
 
@@ -4157,10 +4240,11 @@ function togglePickMode(i){
 
 function botAct(seat){
   if(!G || G.over || !botsDrive()) return;
-  if(UI.dice || G.hold){ setTimeout(()=>botAct(seat), 120); return; }
+  if(UI.dice || UI.intro || G.hold){ setTimeout(()=>botAct(seat), 120); return; }
   const p = seat!=null ? G.players[seat] : currentPlayer();
   if(!p || p.kind!=='bot') return;
   const send = cmd => dispatch(Object.assign({seat:p.idx}, cmd));     // a bot's moves go in like anyone's
+  if(G.tutorial) return tutorBotAct(p, send);
 
   if(G.phase==='placement'){
     if(!placingSeats().includes(p.idx)) return;
@@ -4249,7 +4333,7 @@ function fxLayer(){
   if(!el){ el = document.createElement('div'); el.id = 'fxlayer'; el.setAttribute('aria-hidden','true'); document.body.appendChild(el); }
   return el;
 }
-function fxReset(){ UI.fx = freshFx(); UI.animLock = false; UI.fxWait = false; UI.roundScreen = null; UI.roundGo = null; UI.dice = null; clearInterval(UI.diceSpin); const l = document.getElementById('fxlayer'); if(l) l.innerHTML = ''; }
+function fxReset(){ UI.fx = freshFx(); UI.animLock = false; UI.fxWait = false; UI.roundScreen = null; UI.roundGo = null; UI.dice = null; UI.intro = null; UI.introGo = null; clearTimeout(UI.introT); clearInterval(UI.diceSpin); const l = document.getElementById('fxlayer'); if(l) l.innerHTML = ''; }
 /** The face of a card on screen: a board card's mini, or a hand card. */
 function cardEl(uid){
   if(!uid) return null;
@@ -4499,7 +4583,7 @@ const pendingEnergy = i => (UI.fx.energy[i]||[]).reduce((t,e)=>t+e.amount, 0) + 
 const shownEnergy = p => Math.max(0, p.energy - pendingEnergy(p.idx));
 
 function flushEnergy(){
-  if(!G || UI.screen!=='game' || UI.gate || UI.transition || UI.roundScreen || UI.dice || G.over) return;
+  if(!G || UI.screen!=='game' || UI.gate || UI.transition || UI.roundScreen || UI.dice || UI.intro || G.over) return;
   const me = G.players[viewerIdx()];
   const queue = me && UI.fx.energy[me.idx];
   if(!queue || !queue.length) return;
@@ -4546,6 +4630,8 @@ function bumpPool(p){
   step();
   const spend = document.querySelector('[data-spend]');
   if(spend) spend.textContent = Math.max(0, target - p.planned);
+  const bar = document.querySelector('[data-pben]');
+  if(bar) bar.textContent = '\u26A1' + target;
 }
 
 /* --- cards sliding between places ------------------------------------------
@@ -4600,6 +4686,23 @@ const slidingAttr = uid => UI.fx.slides && UI.fx.slides[uid] ? ' fx-hidden' : ''
 
 let scrollMemo = {strip:0, hand:0};
 
+/** A screen, sheet or banner that was already showing before this redraw
+    doesn't play its entrance again: without this, every redraw during the
+    dice roll or a sheet restarts its fade, and it flickers. */
+function steadyEntrances(){
+  const seen = new Set();
+  document.querySelectorAll('#overlay [data-ak], #overlay .sheet, #overlay .pick-banner, #overlay .choice-side, #app .planet').forEach(el=>{
+    let k = el.dataset.ak;
+    if(!k){
+      if(el.classList.contains('sheet')){ const h = el.querySelector('h3'); k = 'sheet:'+(h ? h.textContent : ''); }
+      else if(el.classList.contains('planet')) k = 'planet:'+el.dataset.planet;
+      else k = el.className.split(' ')[0];
+    }
+    if(UI.akSeen && UI.akSeen.has(k) && !(UI.intro && k.startsWith('planet:'))) el.classList.add('steady');
+    seen.add(k);
+  });
+  UI.akSeen = seen;
+}
 function render(){
   const strip = $('.strip'), hand = $('.hand');
   if(strip) scrollMemo.strip = strip.scrollLeft;
@@ -4617,9 +4720,16 @@ function render(){
     case 'rules':  html = viewRules(); break;
     case 'online': html = viewOnline(); break;
     case 'profile': html = viewProfile(); break;
+    case 'replay': html = viewReplay(); break;
+    case 'social': html = viewSocial(); break;
+    case 'tutorial': html = viewTutorial(); break;
+    case 'player': html = viewPlayer(); break;
   }
   $('#app').innerHTML = html;
-  $('#overlay').innerHTML = viewOverlays();
+  $('#overlay').innerHTML = viewOverlays() + (UI.rp && UI.screen==='game' ? replayBarHTML() : '') + (UI.screen==='game' && G && G.tutorial ? tutCoachHTML() : '');
+  $('#app').classList.toggle('intro-deal', !!(UI.screen==='game' && UI.intro && UI.intro.stage==='deal'));
+  steadyEntrances();
+  if(G && G.tutorial && UI.screen==='game') tutMark();
   if(G && G.online && !G.isView && ON.role==='host') hostBroadcast();     // guests see what the host sees
 
   const s2 = $('.strip'), h2 = $('.hand');
@@ -4675,8 +4785,11 @@ function viewTitle(){
         <button class="btn ${inRoom()?'':'primary'}" data-on="open">Play<span class="k">host, join, or on this device</span></button>
         <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, art &amp; data</span></button>
         <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
+        <button class="btn" data-act="go" data-screen="social">Social<span class="k">${ACCT ? (SO.incoming ? SO.incoming+' friend request'+(SO.incoming===1?'':'s') : (SO.data && SO.data.invites && SO.data.invites.length ? 'you have an invite' : 'friends, invites, comments')) : 'friends, invites, comments'}</span>${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? '<span class="so-dot" aria-hidden="true"></span>' : ''}</button>
+        <button class="btn" data-act="go" data-screen="replay">Replay<span class="k">watch an exported game again</span></button>
         <button class="btn" data-act="go" data-screen="profile">Profile<span class="k">${(()=>{ const st = profileStats(); return st.played ? st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 '+esc(ACCT ? ACCT.user : (profileName()||'no name yet')) : esc(ACCT ? ACCT.user : (profileName()||'sign in, record, history')); })()}</span></button>
-        <button class="btn" data-act="go" data-screen="rules">How it plays</button>
+        <button class="btn" data-act="go" data-screen="tutorial">Tutorial<span class="k">learn to play, then a guided game</span></button>
+        <button class="btn ghost" data-act="go" data-screen="rules">Full rules</button>
       </div>
     </div>
   </div>`;
@@ -4781,6 +4894,7 @@ function lockedSeat(){
 /** Whose eyes the board is drawn through: the locked seat, the active player,
     or the seat being inspected once the game is over. */
 function viewerIdx(){
+  if(UI.rp && UI.replaying && G) return clamp(UI.rp.seat|0, 0, G.players.length-1);
   if(G && G.isView) return G.viewer;        // a device drawing a server's view of the game
   if(G && G.online && NET.seat!=null && !G.over) return NET.seat;   // the host's own seat
   const lock = lockedSeat();
@@ -4868,7 +4982,7 @@ function viewBoard(){
       <span class="turnhint">${hint}</span>
       ${timerHTML()}
     </div>
-    ${simulPlace ? lockBarHTML(meIdx) : ''}
+    ${G.over ? '' : playersBarHTML(meIdx, simulPlace)}
 
     ${G.over ? seatSwitchHTML(meIdx) : ''}
 
@@ -4881,6 +4995,24 @@ function viewBoard(){
 /** Placing at once: one chip per player, filled in their colour once they've
     locked in — the same mark for the same state, so the row reads at a glance
     as "who are we still waiting for". */
+/** Everyone at the table, one chip each, in turn order: Energy and cards in
+    hand, whether they've locked in (placing at once), and who reveals first.
+    The same chip shape for every player, so the row reads at a glance. */
+function playersBarHTML(meIdx, simulPlace){
+  const order = (G.order && G.order.length) ? G.order : G.players.map(p=>p.idx);
+  const first = order[0];
+  return `<div class="lockbar players-bar" role="status" aria-label="Players">${order.map(i=>{
+    const q = G.players[i], me = i===meIdx;
+    const en = me ? shownEnergy(q) : q.energy;
+    const state = simulPlace ? (q.locked ? '\u2713 locked in' : 'placing\u2026') : '';
+    return `<span class="lockchip ${simulPlace&&q.locked?'in':''} ${simulPlace&&!q.locked?'placing':''} ${me?'me':''}" style="--pc:${PCOLORS[i]}">
+      <span class="dot" style="--pc:${PCOLORS[i]}"></span><b class="pb-name">${esc(me?'You':q.name)}</b>
+      <span class="pb-stat" ${me?'data-pben':''} aria-label="${en} Energy">\u26A1${en}</span><span class="pb-stat" aria-label="${q.hand.length} cards in hand">\u{1F0CF}${q.hand.length}</span>
+      ${i===first ? `<span class="pb-first" title="Reveals first this round">1st</span>` : ''}
+      ${state ? `<i>${state}</i>` : ''}
+    </span>`;
+  }).join('')}</div>`;
+}
 function lockBarHTML(meIdx){
   return `<div class="lockbar" role="status" aria-label="Who has locked in">${G.players.map(q=>`
     <span class="lockchip ${q.locked?'in':''} ${q.idx===meIdx?'me':''}" style="--pc:${PCOLORS[q.idx]}">
@@ -4999,8 +5131,8 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
     const tokDef = G.choice.f.tok && !G.choice.f.from ? defById(G.choice.f.tok) : null;
     const met0 = k>=0 && tokDef ? slotMet(pi, si, previewInstance(tokDef, playerIdx), playerIdx) : false;
     return k>=0
-      ? `<button class="slot empty summon-target ${met0?'match':''}" data-act="pickslot" data-i="${k}" style="--fxc:${PCOLORS[G.choice.owner]}" aria-label="Summon here: ${esc(G.planets[pi].name)}, slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}"><span class="slot-mark">${met0?'\u2713':'+'}</span></button>`
-      : `<button class="slot empty" disabled aria-label="Slot ${si+1}"><span class="slot-mark"></span></button>`;
+      ? `<button data-sp="${pi}:${playerIdx}:${si}" class="slot empty summon-target ${met0?'match':''}" data-act="pickslot" data-i="${k}" style="--fxc:${PCOLORS[G.choice.owner]}" aria-label="Summon here: ${esc(G.planets[pi].name)}, slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}"><span class="slot-mark">${met0?'\u2713':'+'}</span></button>`
+      : `<button data-sp="${pi}:${playerIdx}:${si}" class="slot empty" disabled aria-label="Slot ${si+1}"><span class="slot-mark"></span></button>`;
   }
   /* Empty */
   if(!card){
@@ -5009,7 +5141,7 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
     const cls = ['slot','empty', open?'open':'', (open&&sel)?(met?'match':'plain'):'', shuffling&&!open?dest:''].filter(Boolean).join(' ');
     const drop = (isMine && arranging()) ? `data-drop="slot" data-p="${pi}" data-s="${si}" ${condAttr(slot.cond)}` : '';
     const act  = (open && sel && selFits) ? `data-act="drop" data-p="${pi}" data-s="${si}"` : '';
-    return `<button class="${cls}" ${drop} ${act} ${act?'':'disabled'} aria-label="Slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}">
+    return `<button data-sp="${pi}:${playerIdx}:${si}" class="${cls}" ${drop} ${act} ${act?'':'disabled'} aria-label="Slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}">
       <span class="slot-mark">${open&&sel?(met?'\u2713':'+'):''}</span>
     </button>`;
   }
@@ -5018,7 +5150,7 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
   if(boardPicking() && G.choice.kind==='pickcard' && card.faceUp){
     const ok = G.choice.pool.some(o=>o.card.uid===card.uid);
     const met0 = condMet(slot.cond, card);
-    return `<button class="slot filled ${ok?'pickable':'unpickable'}" ${ok?`data-act="targetcard" data-uid="${card.uid}" aria-label="Choose ${esc(card.name)}"`:''}
+    return `<button data-sp="${pi}:${playerIdx}:${si}" class="slot filled ${ok?'pickable':'unpickable'}" ${ok?`data-act="targetcard" data-uid="${card.uid}" aria-label="Choose ${esc(card.name)}"`:''}
       style="--fxc:${PCOLORS[G.choice.owner]}">${miniHTML(card, pc, met0, false, false, null)}</button>`;
   }
   const committed = mine && !card.faceUp && G.phase==='placement';
@@ -5063,8 +5195,9 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
             : liftable ? `data-act="lift" data-uid="${card.uid}"`
             : (card.faceUp || mine) ? `data-act="peek" data-uid="${card.uid}"` : '';
 
-  return `<button class="slot filled ${committed?'committed':''} ${kind==='revealed'?'movable':''} ${lifted?'lifted':''} ${dest} ${activatable?'activatable':''}${card.faceUp?glowAttr(card.uid):''}" ${drop} ${drag} ${act||'disabled'}
-    ${activatable?`aria-label="Activate ${esc(card.name)}"`:''}>${inner}${harvest}</button>`;
+  const paid = G.phase==='placement' && !G.over && card.faceUp && G.paid && G.paid[pi+':'+playerIdx+':'+si];
+  return `<button data-sp="${pi}:${playerIdx}:${si}" class="slot filled ${committed?'committed':''} ${kind==='revealed'?'movable':''} ${lifted?'lifted':''} ${dest} ${activatable?'activatable':''} ${paid?'paid':''}${card.faceUp?glowAttr(card.uid):''}" ${drop} ${drag} ${act||'disabled'}
+    ${activatable?`aria-label="Activate ${esc(card.name)}"`:paid?`title="This slot paid out at the start of the round"`:''}>${inner}${harvest}</button>`;
 }
 
 /** The face of a card, sized for a slot. */
@@ -5077,6 +5210,12 @@ const PASSIVE_MARK = '\u25C8';      // ◈
 function passiveMarkHTML(card){
   const w = passiveOf(card);
   return w ? `<span class="pass-chip" title="Passive: ${esc(WHEN[w].label)}" aria-label="Passive ability: ${esc(WHEN[w].label)}">${PASSIVE_MARK}</span>` : '';
+}
+/** On a full card face: ⚙ (activated) and ◈ (passive), side by side, under the art. */
+function cardMarksHTML(card){
+  const a = actSpec(card), pass = passiveMarkHTML(card);
+  const act = a ? `<span class="act-chip idle" title="Activated ability">\u2699${a.cost?`<b>${a.cost}</b>`:''}</span>` : '';
+  return act||pass ? `<span class="marks">${act}${pass}</span>` : '';
 }
 function miniHTML(card, pc, met, committed, peeking, actState){
   const cls = powerCls(card);
@@ -5091,7 +5230,7 @@ function miniHTML(card, pc, met, committed, peeking, actState){
     <div class="art">${artHTML(card.art, card.name)}</div>
     <div class="nm">${esc(card.name)}</div>
     ${committed?'<span class="pinned">held</span>':''}
-    ${chip}${pass}
+    ${chip||pass ? `<span class="marks">${chip}${pass}</span>` : ''}
   </div>`;
 }
 
@@ -5186,10 +5325,9 @@ function cardHTML(card, selected, dim, big){
       style="--pc:${PCOLORS[card.owner]||'var(--p1)'}" data-rarity="${rarityOf(card)}" data-act="hand" data-uid="${card.uid}"
       ${draggable?`data-drag="hand"`:''}>
     <div class="top"><span class="badge e">${card.cost}</span><span class="badge p ${powerCls(card)}${tk.cls}" ${big?'':`data-pw="${card.uid}"`}>${tk.v}</span></div>
-    <div class="art">${artHTML(card.art, card.name)}</div>
+    <div class="art">${artHTML(card.art, card.name)}${cardMarksHTML(card)}</div>
     <div class="nm">${esc(card.name)}</div>
     <div class="tx">${esc(tx)}</div>
-    ${passiveMarkHTML(card)}
   </button>`;
 }
 /* --- RESULTS --------------------------------------------------- */
@@ -5219,11 +5357,15 @@ function viewResult(){
       <div class="row">
         <button class="btn primary" data-act="review">Review the board</button>
         <button class="btn" data-act="sheet" data-v="grave">Graveyard</button>
-        ${G.online || G.isView
+        ${G.tutorial ? '' : UI.rp ? `<button class="btn" data-act="rpexit">Exit the replay</button>` : G.online || G.isView
           ? (ON.role==='host' ? `<button class="btn" data-on="lobby">Back to the lobby</button>` : `<p class="tiny muted" style="margin:0;text-align:center">The host can take everyone back to the lobby for another game.</p>`)
           : `<button class="btn" data-act="begin">Play again</button>`}
         <button class="btn" data-act="sheet" data-v="log">Read the log</button>
-        <button class="btn ghost" data-act="home">Menu</button>
+        ${UI.rp || G.tutorial ? '' : `<button class="btn" data-act="gameexport" title="Save this game as a file you can load on the Replay page">Export game</button>`}
+        ${UI.rp || G.tutorial ? '' : `<button class="btn ghost" data-act="home">Menu</button>`}
+      </div>
+      ${G.tutorial ? tutResultHTML() : ''}
+      <div class="row" style="display:none">
       </div>
     </div>`;
 }
@@ -5413,8 +5555,8 @@ function choiceSheetHTML(){
 /** The sandbox bench. Opens from the 🧪 button, and on top of a choice. */
 function sandboxSheetHTML(){
   const sel = clamp(UI.sbPlayer|0, 0, G.players.length-1);
-  const all = LIB.cards.map(c=>[c,false]).concat(LIB.tokens.map(c=>[c,true]))
-    .sort((a,b)=>a[0].name.localeCompare(b[0].name));
+  const every = LIB.cards.map(c=>[c,false]).concat(LIB.tokens.map(c=>[c,true]));
+  const all = sortFilterCards(every, 'sandbox', x=>x[0]);
   const q = (UI.sbQuery||'').toLowerCase();
   return `<div class="scrim" data-act="closesheet"></div><div class="sheet sb-sheet">
     <div class="sheet-head"><h3>\u{1F9EA} Sandbox</h3>
@@ -5439,6 +5581,7 @@ function sandboxSheetHTML(){
           <span class="dot" style="--pc:${PCOLORS[p.idx]};display:inline-block"></span> ${esc(p.name)}</button>`).join('')}
         <input class="sb-search" type="search" placeholder="Search cards…" data-act="sbquery" value="${esc(UI.sbQuery||'')}" aria-label="Search cards">
       </div>
+      ${cardSortBarHTML('sandbox', all.length, every.length)}
       <div class="sb-list">${all.map(([c,tok])=>`
         <button class="sb-card" data-act="sbadd" data-id="${c.id}" data-name="${esc(c.name.toLowerCase())}" data-rarity="${tok?'token':(c.rarity||'basic')}"${q && !c.name.toLowerCase().includes(q)?' hidden':''}>
           <span class="badge e">${c.cost}</span><span class="badge p">${c.power}</span>
@@ -5476,12 +5619,13 @@ function graveSheetHTML(){
 }
 
 function viewOverlays(){
+  if(SO.popup && !(UI.screen==='game' && G && !G.over && (G.online||G.isView))) return invitePopupHTML();
   let out = '';
   if(UI.screen==='game' && G && (G.online || G.isView)){ const nb = netStatusHTML(); if(nb) out += `<div class="net-banners">${nb}</div>`; }
   if(UI.screen==='game' && G && UI.transition){
     const tr = UI.transition;
     const pc = tr.pi==null ? 'var(--p1)' : PCOLORS[tr.pi];
-    out += `<div class="beat" style="--pc:${pc}" role="status">
+    out += `<div class="beat" data-ak="beat:${esc(tr.title)}" style="--pc:${pc}" role="status">
       ${tr.pi==null?'':`<span class="dot" style="--pc:${pc}"></span>`}
       <div class="beat-text">
         <div class="beat-title">${esc(tr.title)}</div>
@@ -5491,6 +5635,8 @@ function viewOverlays(){
     </div>`;
   }
   if(UI.screen==='game' && G && UI.roundScreen) return out + roundScreenHTML();
+  if(UI.screen==='game' && G && UI.intro && UI.intro.stage==='vs') return out + introHTML();
+  if(UI.screen==='game' && G && UI.intro) return out + `<div class="intro-skip" data-act="introgo" aria-label="Skip"></div>`;
   if(UI.screen==='game' && G && UI.dice) return out + diceHTML();
   if(UI.screen==='game' && G && !G.over){
     if(UI.gate){
@@ -5522,6 +5668,8 @@ function viewOverlays(){
   }
 
   if(UI.sheet==='hist' && UI.screen==='profile') return out + historySheetHTML();
+  if(UI.sheet==='rplog' && UI.screen==='replay') return out + rpLogSheetHTML();
+  if(UI.sheet==='pgame' && UI.screen==='player') return out + playerGameSheetHTML();
   if(UI.sheet==='log' && G){
     const items = G.log.slice(-160).map(l=> l.rd
       ? `<div class="rd">${esc(l.t)}</div>`
@@ -6278,16 +6426,77 @@ function fxAtPath(sel, path){
   return {f, list, idx: parts[parts.length-1], parent: parts.length>1 ? sel.fx[parts[0]] : null};
 }
 
+/* --- sorting and filtering card lists (Studio and Sandbox) ------- */
+/** Every verb an effect list uses, including the options inside a 'choose'. */
+function fxVerbs(fx, out){
+  out = out || new Set();
+  (fx||[]).forEach(f=>{ if(!f) return; out.add(f.v); if(f.v==='choose') fxVerbs(f.opts, out); });
+  return out;
+}
+const isPassiveFx = f => { const w = whenOf(f); return w!=='reveal' && w!=='activate'; };
+function cardFacets(c){
+  const fx = c.fx||[];
+  return { verbs: fxVerbs(fx), passive: fx.some(isPassiveFx), activate: fx.some(f=>whenOf(f)==='activate') };
+}
+function cfState(scope){
+  UI.cf = UI.cf || {};
+  return UI.cf[scope] || (UI.cf[scope] = {sort:'name', dir:1, verbs:[], passive:false, activate:false, open:false});
+}
+/** The cards that pass this list's filters, in its sort order. Within ability
+    verbs a card needs any of the ticked ones; Passive and Activated each narrow further. */
+function sortFilterCards(items, scope, get){
+  get = get || (x=>x);
+  const st = cfState(scope);
+  const keep = items.filter(x=>{
+    const f = cardFacets(get(x));
+    if(st.verbs.length && !st.verbs.some(v=>f.verbs.has(v))) return false;
+    if(st.passive && !f.passive) return false;
+    if(st.activate && !f.activate) return false;
+    return true;
+  });
+  const key = {
+    name:  c=>0,
+    cost:  c=>c.cost|0,
+    power: c=>c.power|0
+  }[st.sort] || (c=>0);
+  return keep.sort((a,b)=>{ const A=get(a), B=get(b);
+    return (key(A)-key(B))*st.dir || A.name.localeCompare(B.name)*(st.sort==='name'?st.dir:1); });
+}
+function cfActive(st){ return st.verbs.length + (st.passive?1:0) + (st.activate?1:0); }
+function cardSortBarHTML(scope, shown, total){
+  const st = cfState(scope);
+  const sortBtn = (k, lbl) => `<button class="chip ${st.sort===k?'on':''}" data-act="cfsort" data-scope="${scope}" data-v="${k}"
+      aria-pressed="${st.sort===k}">${lbl}${st.sort===k?(st.dir>0?' \u2191':' \u2193'):''}</button>`;
+  const n = cfActive(st);
+  const chip = (k, lbl, on) => `<button class="chip ${on?'on':''}" data-act="cfchip" data-scope="${scope}" data-v="${k}" aria-pressed="${!!on}">${lbl}</button>`;
+  return `<div class="cf-bar">
+    <div class="cf-row"><span class="cf-lbl">Sort</span>
+      ${sortBtn('name','Name')}${sortBtn('cost','\u26A1 Cost')}${sortBtn('power','\u{1F4AA} Power')}
+      <span class="spacer" style="flex:1"></span>
+      <button class="chip ${n?'on':''}" data-act="cfopen" data-scope="${scope}" aria-expanded="${!!st.open}">Filter${n?` \u00B7 ${n}`:''}</button>
+    </div>
+    ${st.open?`<div class="cf-row cf-filters">
+      ${chip('passive','\u25C8 Passive', st.passive)}${chip('activate','\u2699 Activated', st.activate)}
+      <span class="cf-sep"></span>
+      ${Object.keys(VERBS).map(v=>chip('v:'+v, VERBS[v].label, st.verbs.includes(v))).join('')}
+      ${n?`<button class="btn sm ghost" data-act="cfclear" data-scope="${scope}">Clear</button>`:''}
+    </div>`:''}
+    ${n?`<div class="tiny muted cf-count">${shown} of ${total} shown</div>`:''}
+  </div>`;
+}
+
 function cardStudio(isToken){
   const arr = isToken ? LIB.tokens : LIB.cards;
   const sel = arr.find(c=>c.id===UI.editCard) || arr[0];
   if(sel) UI.editCard = sel.id;
 
-  const list = `<div class="list">${arr.map(cd=>`
+  const scope = isToken ? 'tokens' : 'cards';
+  const shownArr = sortFilterCards(arr.slice(), scope);
+  const list = `${cardSortBarHTML(scope, shownArr.length, arr.length)}<div class="list">${shownArr.length?'':`<div class="empty-note">No ${isToken?'tokens':'cards'} match these filters.</div>`}${shownArr.map(cd=>`
     <button class="list-item ${sel&&cd.id===sel.id?'on':''}" data-act="pickcard" data-id="${cd.id}" data-tok="${isToken?1:0}">
       <span class="thumb">${artHTML(cd.art, cd.name)}</span>
       <span class="nm"><span class="rar-dot" data-rarity="${rarityOf(cd)}" title="${RARITIES[rarityOf(cd)]}"></span> ${esc(cd.name)}${cd.review?' <span class="flagdot">check</span>':''}<small>${esc(fxText(cd.fx)||'No ability')}</small></span>
-      <span class="stat">${cd.cost}\u26A1 / ${cd.power}\u2726</span>
+      <span class="stat">${cd.cost}\u26A1 / ${cd.power}\u{1F4AA}</span>
     </button>`).join('')}</div>`;
 
   const add = `<div class="row"><button class="btn sm" data-act="newcard" data-tok="${isToken?1:0}">Add a ${isToken?'token':'card'}</button>
@@ -6408,7 +6617,7 @@ function viewDecks(){
     const n = counts[cd.id]||0;
     return `<div class="list-item">
       <span class="thumb">${artHTML(cd.art,cd.name)}</span>
-      <span class="nm">${esc(cd.name)}<small>${cd.cost}\u26A1 / ${cd.power}\u2726 \u00B7 ${esc(fxText(cd.fx)||'No ability')}</small></span>
+      <span class="nm">${esc(cd.name)}<small>${cd.cost}\u26A1 / ${cd.power}\u{1F4AA} \u00B7 ${esc(fxText(cd.fx)||'No ability')}</small></span>
       <button class="btn sm ghost" data-act="deckminus" data-id="${cd.id}" ${n?'':'disabled'}>\u2212</button>
       <span class="stat" style="min-width:16px;text-align:center;color:${n?'var(--ui-text)':'var(--ui-faint)'}">${n}</span>
       <button class="btn sm ghost" data-act="deckplus" data-id="${cd.id}">+</button>
@@ -6803,13 +7012,48 @@ document.addEventListener('click', e=>{
 
   switch(a){
     /* navigation */
-    case 'home': UI.screen='title'; UI.sheet=null; render(); break;
+    case 'home': if(UI.rp) stopReplay(true); if(G && G.tutorial){ tutLeave('title'); break; } UI.screen='title'; UI.sheet=null; render(); break;
+    case 'tutpage': TUT.page = clamp(+t.dataset.i, 0, TUTOR_PAGES.length-1); render(); window.scrollTo(0,0); break;
+    case 'tutplay': tutBegin(); break;
+    case 'tutnext': { const st = tutStep(); if(st && st.info){ TUT.step++; render(); } break; }
+    case 'tutmin': TUT.min = !TUT.min; render(); break;
+    case 'tutagain': stopTutorGame(); tutBegin(); break;
+    case 'tutexit': tutLeave(t.dataset.v==='online' ? 'online' : 'title'); break;
     case 'go': UI.screen = t.dataset.screen; UI.sheet=null; render(); break;
     case 'tab': studioTab = t.dataset.v; render(); break;
     case 'sheet': UI.sheet = t.dataset.v; render(); break;
     case 'closesheet': UI.sheet=null; UI.peek=null; UI.peekStack=[]; render(); break;
     case 'peekdef': inspectDef(t.dataset.id); break;
     case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
+    case 'pftab': UI.pfTab = t.dataset.v; render(); break;
+    case 'soreload': SO.data = null; soLoad(); render(); break;
+    case 'souser': if(e.target.closest('[data-act="soinvite"]')) break; soOpenUser(t.dataset.u); break;
+    case 'soinvite': e.stopPropagation(); if(inRoom() && isHost()) soAct('invite', t.dataset.u, {code:ON.code}); break;
+    case 'sorequest': soAct('request', t.dataset.u); break;
+    case 'soaccept': soAct('accept', t.dataset.u); break;
+    case 'sodecline': soAct('decline', t.dataset.u); break;
+    case 'soremove': if(UI.soRemove===t.dataset.u){ UI.soRemove = null; soAct('remove', t.dataset.u); } else { UI.soRemove = t.dataset.u; render(); } break;
+    case 'sogame': soOpenGame(t.dataset.u, t.dataset.id); break;
+    case 'sowatch': if(SO.game && SO.game.replay) { UI.sheet = null; startReplay(JSON.parse(gameFile(SO.game))); } break;
+    case 'soexport': if(SO.game && SO.game.id) exportGame(SO.game); break;
+    case 'sopost': soComment(); break;
+    case 'sodelc': soDelComment(t.dataset.id); break;
+    case 'sojoin': soJoin({code:t.dataset.code, from:t.dataset.from}); break;
+    case 'sodismiss': acctCall('POST', '/api/social/dismiss', {code:t.dataset.code}).catch(()=>{}); if(SO.data) SO.data.invites = SO.data.invites.filter(i=>i.code!==t.dataset.code); render(); break;
+    case 'sodismisspop': SO.popup = null; render(); break;
+    case 'stsort': UI.stSort = t.dataset.v; render(); break;
+    case 'stall': UI.stAll = !UI.stAll; render(); break;
+    case 'histexport': { const g = PROFILE.games.find(x=>x.id===t.dataset.id);
+      if(g && !g.log && g.hasLog && ACCT){ fetchLog(g.id).then(()=>exportGame(g)); } else exportGame(g); break; }
+    case 'gameexport': exportGame(currentGameEntry()); break;
+    case 'rphist': UI.sheet = null; histReplay(t.dataset.id); break;
+    case 'rpstart': if(UI.rpLoaded && UI.rpLoaded.replay) startReplay(UI.rpLoaded); break;
+    case 'rplog': UI.sheet = 'rplog'; render(); break;
+    case 'rpplay': if(UI.rp){ UI.rp.playing = !UI.rp.playing; UI.rp.err = ''; render(); if(UI.rp.playing) rpSchedule(0); } break;
+    case 'rpstep': if(UI.rp){ UI.rp.step = true; rpSchedule(0); } break;
+    case 'rpspeed': if(UI.rp){ const sp = [1,2,4]; UI.rp.speed = UI.rpSpeed = sp[(sp.indexOf(UI.rp.speed)+1)%sp.length]; render(); } break;
+    case 'rpseat': if(UI.rp){ UI.rp.seat = +t.dataset.i; UI.reviewSeat = UI.rp.seat; render(); } break;
+    case 'rpexit': stopReplay(); break;
     case 'histclear':
       if(!UI.pfClear){ UI.pfClear = true; render(); setTimeout(()=>{ UI.pfClear = false; if(UI.screen==='profile') render(); }, 3500); break; }
       UI.pfClear = false; PROFILE.games = []; PROFILE.pending = []; saveProfile();
@@ -6901,6 +7145,16 @@ document.addEventListener('click', e=>{
     case 'sbenergy': dispatch({t:'sandbox', seat:sbSeat(), op:'energy', i:+t.dataset.i, v:+t.dataset.v}); break;
     case 'sbdraw': dispatch({t:'sandbox', seat:sbSeat(), op:'draw', i:+t.dataset.i}); break;
     case 'sbplayer': UI.sbPlayer = +t.dataset.i; render(); break;
+    case 'cfsort': { const st = cfState(t.dataset.scope); const k = t.dataset.v;
+      if(st.sort===k) st.dir = -st.dir; else { st.sort = k; st.dir = k==='name' ? 1 : -1; }
+      render(); break; }
+    case 'cfopen': { const st = cfState(t.dataset.scope); st.open = !st.open; render(); break; }
+    case 'cfclear': { const st = cfState(t.dataset.scope); st.verbs = []; st.passive = st.activate = false; render(); break; }
+    case 'cfchip': { const st = cfState(t.dataset.scope); const v = t.dataset.v;
+      if(v==='passive') st.passive = !st.passive;
+      else if(v==='activate') st.activate = !st.activate;
+      else { const verb = v.slice(2); st.verbs = st.verbs.includes(verb) ? st.verbs.filter(x=>x!==verb) : st.verbs.concat(verb); }
+      render(); break; }
     case 'sbadd': dispatch({t:'sandbox', seat:sbSeat(), op:'add', i:clamp(UI.sbPlayer|0,0,G.players.length-1), id:t.dataset.id}); break;
     case 'sbround': dispatch({t:'sandbox', seat:sbSeat(), op:'round', v:+t.dataset.v}); break;
     case 'sbgrave': dispatch({t:'sandbox', seat:sbSeat(), op:'grave'}); break;
@@ -6911,6 +7165,7 @@ document.addEventListener('click', e=>{
     case 'ungate': UI.gate=false; afterStateChange(); break;
     case 'roundgo': if(UI.roundGo) UI.roundGo(); break;
     case 'dicego': if(UI.diceGo) UI.diceGo(); break;
+    case 'introgo': if(UI.introGo) UI.introGo(); break;
 
     /* after the game */
     case 'review': UI.review = true; UI.sheet = null; render(); break;
@@ -7254,6 +7509,18 @@ document.addEventListener('change', e=>{
   if(!file) return;
   const kind = el.dataset.up;
 
+  if(kind==='gamefile'){
+    const fr = new FileReader();
+    fr.onload = ()=>{
+      const r = readGameFile(String(fr.result||''));
+      UI.rpLoaded = r.file || null; UI.rpError = r.error || '';
+      render();
+      if(!r.error) toast('Game loaded.');
+    };
+    fr.readAsText(file);
+    el.value = '';
+    return;
+  }
   if(kind==='csvfile'){
     const fr = new FileReader();
     fr.onload = ()=>{
@@ -7566,6 +7833,7 @@ function hostScreenState(){
     transition: UI.transition || null,
     roundScreen: UI.roundScreen ? JSON.parse(JSON.stringify(UI.roundScreen)) : null,
     dice: UI.dice ? {round:UI.dice.round, landed:!!UI.dice.landed} : null,
+    intro: UI.intro ? {stage:UI.intro.stage} : null,
     timers: (turn || choice) ? {turn, choice} : null
   };
 }
@@ -7708,6 +7976,7 @@ function guestView(d){
   UI.roundScreen = ui.roundScreen || null;
   UI.roundGo = null;
   mirrorDice(ui.dice);
+  UI.intro = ui.intro && animOn() ? {stage:ui.intro.stage} : null; UI.introGo = null;
   ON.timers = ui.timers || null; ON.timersAt = Date.now();
   if(first){ UI.screen = 'game'; UI.sheet = null; }
   if(UI.sel && !findCardByUid(UI.sel)) UI.sel = null;
@@ -7756,7 +8025,7 @@ function guestAfterView(){
   if(!UI.autoflip) return;
   const down = faceDownOf(me);
   if(!down.length){ UI.autoflip = false; return; }
-  if(G.hold || G.flipping || G.choice || UI.transition || UI.roundScreen || UI.dice) return;
+  if(G.hold || G.flipping || G.choice || UI.transition || UI.roundScreen || UI.dice || UI.intro) return;
   const uid = down[0].card.uid;
   if(ON.flipAsk && ON.flipAsk.uid===uid && Date.now()-ON.flipAsk.at < 2500) return;
   ON.flipAsk = {uid, at:Date.now()};
@@ -7835,6 +8104,20 @@ function viewOnline(){
   </div>`;
 }
 
+/** Friends to invite, in the host's lobby. */
+function lobbyInviteHTML(){
+  if(!ACCT || !accountsAvailable()) return '';
+  if((!SO.data || SO.lobbyFor!==ON.code || Date.now()-(SO.at||0) > 30000) && !SO.loading){ SO.lobbyFor = ON.code; SO.at = Date.now(); soLoad().then(()=>{ if(UI.screen==='online') render(); }); }
+  const fr = SO.data ? SO.data.friends : null;
+  if(!fr) return `<div class="lobby-invite"><div class="sb-label">Invite friends</div><div class="net-wait"><span class="spinner"></span>Loading friends…</div></div>`;
+  if(!fr.length) return `<div class="lobby-invite"><div class="sb-label">Invite friends</div><p class="tiny muted" style="margin:0">Add friends in the Social tab and you can invite them straight into your room.</p></div>`;
+  const here = new Set(ON.seats.map(x=>String(x.name||'').toLowerCase()));
+  return `<div class="lobby-invite"><div class="sb-label">Invite friends</div>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${fr.map(f=>{
+      const sent = SO.invited[f.user]===ON.code, busy = SO.busy['invite:'+f.user];
+      return `<button class="chip ${sent?'on':''}" data-act="soinvite" data-u="${esc(f.user)}" ${busy?'disabled':''} title="@${esc(f.user)}">${sent?'✓ ':'+ '}${esc(f.name||f.user)}</button>`; }).join('')}</div>
+    <p class="tiny muted" style="margin:6px 0 0">They get a pop-up with a Join button.</p></div>`;
+}
 function viewLobby(){
   const L = ON.lobby, host = isHost(), n = L.seats.length;
   const decks = host ? LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})) : ON.decks;
@@ -7882,6 +8165,7 @@ function viewLobby(){
       </div>
     </div>
     <div class="lobby-seats">${rows}</div>
+    ${host ? lobbyInviteHTML() : ''}
     ${settings}
     ${host
       ? `<button class="btn primary wide" data-on="start" ${others?'':'disabled'}>${others ? 'Start the game' : 'Waiting for someone to join…'}</button>
@@ -8030,26 +8314,255 @@ function recordSeat(){
 }
 /** A finished game goes into the history, once. Sandbox games and replays don't count. */
 function recordGame(){
-  if(!G || !G.over || !G.result || G.sandbox || UI.replaying || !G.gameId) return;
+  if(!G || !G.over || !G.result || G.sandbox || G.tutorial || UI.replaying || !G.gameId) return;
   if(PROFILE.games.some(g=>g.id===G.gameId)) return;
   const seat = recordSeat();
   if(seat==null) return;
+  const entry = gameEntry(seat);
+  PROFILE.games.unshift(entry);
+  if(PROFILE.games.length > HISTORY_MAX) PROFILE.games.length = HISTORY_MAX;
+  PROFILE.games.forEach((g,i)=>{ if(i >= LOGS_KEPT && !ACCT){ g.log = null; g.replay = null; } });
+  if(ACCT){ (PROFILE.pending = PROFILE.pending || []).push(entry.id); }
+  saveProfile();
+  if(ACCT) flushPending();
+}
+/** A finished game as the match history keeps it, seen from `seat`. */
+function gameEntry(seat){
   const r = G.result;
-  const entry = {
+  const e = {
     id: G.gameId, at: Date.now(), mode: (G.online || G.isView) ? 'online' : 'local', seat,
     result: r.winner==null ? 'draw' : r.winner===seat ? 'win' : 'loss',
     won: r.won.slice(), reason: r.reason, rounds: G.rounds,
     players: G.players.map(p=>({name:p.name, bot: p.kind==='bot' && !p.standIn})),
     rows: r.rows.map(x=>({name:x.name, scores:x.scores.slice(), winner:x.winner})),
-    log: G.log.filter(l=>!l.vis || l.vis.includes(seat)).map(l=>l.rd ? {rd:1, t:l.t} : {t:l.t, w:l.who})
+    log: G.log.filter(l=>!l.vis || l.vis.includes(seat)).map(l=>l.rd ? {rd:1, t:l.t} : {t:l.t, w:l.who}),
+    stats: gameStats(seat)
   };
-  PROFILE.games.unshift(entry);
-  if(PROFILE.games.length > HISTORY_MAX) PROFILE.games.length = HISTORY_MAX;
-  PROFILE.games.forEach((g,i)=>{ if(i >= LOGS_KEPT && !ACCT) g.log = null; });
-  if(ACCT){ (PROFILE.pending = PROFILE.pending || []).push(entry.id); }
-  saveProfile();
-  if(ACCT) flushPending();
+  const rp = G.replay || (G.setup ? replayBundle(G) : null);
+  if(rp) e.replay = rp;
+  return e;
 }
+/** The numbers the Stats page adds up, for one seat in one finished game. */
+function gameStats(seat){
+  const t = G.track;
+  if(!t) return null;
+  const won = G.result.winner===seat;
+  const where = {};
+  G.planets.forEach((pl,pi)=>pl.board[seat].forEach(c=>{ if(c) where[c.uid] = pi; }));
+  const cards = (G.plays||[]).filter(pl=>pl.playerIdx===seat).map(pl=>{
+    const c = anyCardByUid(pl.uid);
+    if(!c || !c.name) return null;
+    const at = where[pl.uid];
+    return {n:c.name, pw: at==null ? null : G.result.rows[at].winner===seat ? 1 : 0};
+  }).filter(Boolean);
+  return {
+    v:1, won: won?1:0,
+    draws: Array.from({length:G.rounds}, (_,i)=>t.draws[seat][i+1]||0),
+    power: Array.from({length:G.rounds}, (_,i)=>t.power[seat][i+1]||0),
+    slots: G.planets.map((pl,pi)=>({p:pl.name, s: pl.slots.map((sl,si)=>({c:condShort(sl.cond), r:rewText(sl.rew), o:t.slots[pi][seat][si][0], m:t.slots[pi][seat][si][1]}))})),
+    cards
+  };
+}
+
+/* --- replays -----------------------------------------------------------
+   A game is its seed, its seats and decks, the library it was played with,
+   and every command in order. Big uploaded pictures are left out (a replay
+   borrows this device's art for the same card or planet, or shows a blank). */
+const GAME_FILE_V = 1;
+const smallArt = a => (a && a.t==='img' && String(a.v||'').length > 2000) ? {t:'ref'} : clone(a||null);
+function replayLibSnapshot(decks){
+  const want = new Set();
+  decks.forEach(d=>(d && d.cards || []).forEach(id=>want.add(id)));
+  const all = LIB.cards.concat(LIB.tokens||[]);
+  /* cards named inside another card's effects (a summon, a create) come along too */
+  let grew = true;
+  while(grew){
+    grew = false;
+    all.forEach(c=>{ if(!want.has(c.id)) return;
+      const txt = JSON.stringify(c.fx||[]);
+      all.forEach(o=>{ if(!want.has(o.id) && txt.includes('"'+o.id+'"')){ want.add(o.id); grew = true; } }); });
+  }
+  const strip = c => Object.assign(clone(c), {art: smallArt(c.art)});
+  return {
+    cards: LIB.cards.filter(c=>want.has(c.id)).map(strip),
+    tokens: (LIB.tokens||[]).map(strip),
+    planets: LIB.planets.map(p=>Object.assign(clone(p), {art: smallArt(p.art)})),
+    decks: decks.filter(Boolean).filter((d,i,a)=>a.indexOf(d)===i).map(d=>({id:d.id, name:d.name, cards:(d.cards||[]).slice()}))
+  };
+}
+function replayBundle(g){
+  g = g || G;
+  if(!g.setup) return g.replay || null;
+  return {v:GAME_FILE_V, setup:g.setup, cmds:(g.cmdLog||[]).map(c=>{ const o = Object.assign({}, c); delete o.n; return o; })};
+}
+/** The file a game is exported as: what happened (the log), how it ended, and
+    the replay. */
+function gameFile(entry){
+  const {log, replay, ...summary} = entry;
+  return JSON.stringify({format:'territory-game', v:GAME_FILE_V, exported:new Date().toISOString(), summary, log:log||null, replay:replay||null});
+}
+function gameFileName(entry){
+  const d = new Date(entry.at||Date.now());
+  const day = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const who = (entry.players||[]).map(p=>String(p.name||'').replace(/[^a-z0-9]+/gi,'')).filter(Boolean).join('-vs-').slice(0,40) || 'game';
+  return `territory-${day}-${who}.json`;
+}
+function exportGame(entry){
+  if(!entry){ toast('There is no game to export.'); return; }
+  saveFile(gameFileName(entry), gameFile(entry));
+}
+/** The game on the result screen, as a history entry (even a sandbox game, which the history doesn't keep). */
+function currentGameEntry(){
+  if(!G || !G.over || !G.result) return null;
+  const kept = PROFILE.games.find(x=>x.id===G.gameId);
+  if(kept && (kept.log || kept.replay)) return kept;
+  const seat = recordSeat();
+  return gameEntry(seat==null ? 0 : seat);
+}
+/** Read an exported game. Returns {file} or {error}. */
+function readGameFile(text){
+  let j; try{ j = JSON.parse(text); }catch(e){ return {error:'That file isn’t a game export (it isn’t JSON).'}; }
+  if(!j || j.format!=='territory-game') return {error:'That file isn’t a Territory game export.'};
+  if(!j.replay || !j.replay.setup || !Array.isArray(j.replay.cmds)) return {error:'This export has the log but no replay (it came from an older version).', file:j};
+  if((j.replay.v||1) > GAME_FILE_V) return {error:'This game was exported by a newer version of Territory.'};
+  return {file:j};
+}
+
+/** Borrow the game's library, rebuild the game from its seed, then play its
+    commands back one at a time, pausing for each animation. */
+function startReplay(file){
+  const rp = file.replay, st = rp.setup;
+  if(UI.rp) stopReplay(true);
+  const mine = LIB;
+  const fill = (list, own) => list.map(c=>{
+    if(c.art && c.art.t==='ref'){ const o = own.find(x=>x.id===c.id) || own.find(x=>x.name===c.name); c.art = o ? clone(o.art) : null; }
+    return c;
+  });
+  const lib = clone(st.lib);
+  LIB = Object.assign(blankLibrary(), {
+    cards: fill(lib.cards, mine.cards), tokens: fill(lib.tokens||[], mine.tokens||[]),
+    planets: fill(lib.planets, mine.planets), decks: lib.decks
+  });
+  LIB.settings = Object.assign({}, mine.settings, {hide:false, turnTimer:0, turnTimerCustom:false});
+  RP_LIB_SWAPPED = true;
+  const seat = file.summary && file.summary.seat!=null ? file.summary.seat : (st.kinds.indexOf('human')>=0 ? st.kinds.indexOf('human') : 0);
+  UI.rp = {file, cmds: rp.cmds, i:0, playing:true, speed: UI.rpSpeed||1, seat, saved:mine, idleSince:null, err:'', back: UI.screen};
+  UI.replaying = true;
+  UI.screen = 'game'; UI.sheet = null;
+  newGame({seed:st.seed, players:st.players, kinds:st.kinds, names:st.names, deckOf:st.deckOf,
+           planets:st.planets, rounds:st.rounds, mulligan:st.mulligan, forceSimul:!!st.simul, sandbox:!!st.sandbox, online:false});
+  G.gameId = 'replay';
+  render();
+  rpSchedule(400);
+}
+function stopReplay(quiet){
+  const rp = UI.rp;
+  if(!rp) return;
+  clearTimeout(UI.rpT);
+  fxReset();
+  G = null; LIB = rp.saved; RP_LIB_SWAPPED = false;
+  UI.rp = null; UI.replaying = false; UI.sheet = null; UI.review = false;
+  if(!quiet){ UI.screen = 'replay'; render(); }
+}
+const RP_PACE = {place:700, unplace:450, move:650, lock:550, unlock:350, mulligan:800, flip:1150, activate:1050, endReveal:650, choose:1100, sandbox:500};
+function rpSchedule(ms){ clearTimeout(UI.rpT); UI.rpT = setTimeout(rpTick, Math.max(0, ms)); }
+const rpUIBusy = () => !!(UI.transition || UI.flipAnim || UI.animLock || UI.fxWait || UI.roundScreen || UI.dice || UI.intro || (G && (G.hold || G.flipping)));
+function rpTick(){
+  const rp = UI.rp;
+  if(!rp || !UI.replaying || UI.screen!=='game' || !G) return;
+  if(!rp.playing && !rp.step) return;
+  if(rp.i >= rp.cmds.length){ rp.playing = false; rp.step = false; render(); return; }
+  if(rpUIBusy()){ rp.idleSince = null; rpSchedule(120); return; }
+  if(rp.idleSince==null) rp.idleSince = Date.now();
+  let cmd = rp.cmds[rp.i];
+  while(cmd && cmd.t==='standin'){ rp.i++; cmd = rp.cmds[rp.i]; }    // a bot taking a seat over changes nobody's cards
+  if(!cmd){ rpTick(); return; }
+  const why = cmdCheck(cmd);
+  if(why==='busy' || (why==='choice' && cmd.t!=='choose')){
+    rp.waits = (rp.waits||0) + 1;
+    if(rp.waits < 200){ rpSchedule(150); return; }
+  }
+  if(why && why!=='busy' && why!=='choice'){ rp.err = `The replay stopped at step ${rp.i+1}: that move no longer fits (${why}). The library or rules may have changed since this game.`; rp.playing = false; render(); return; }
+  const wait = rp.step ? 0 : (RP_PACE[cmd.t]||600)/rp.speed - (Date.now() - rp.idleSince);
+  if(wait > 0){ rpSchedule(wait); return; }
+  UI.rpApplying = true;
+  let r;
+  try{ r = dispatch(cmd); } finally{ UI.rpApplying = false; }
+  if(!r.ok){ rp.err = `The replay stopped at step ${rp.i+1} (${r.why}).`; rp.playing = false; render(); return; }
+  rp.i++; rp.waits = 0; rp.idleSince = null; rp.step = false;
+  render();
+  rpSchedule(60);
+}
+function replayBarHTML(){
+  const rp = UI.rp;
+  if(!rp || !G) return '';
+  const done = rp.i >= rp.cmds.length;
+  const pct = rp.cmds.length ? Math.round(100*rp.i/rp.cmds.length) : 100;
+  return `<div class="rp-bar" role="toolbar" aria-label="Replay controls">
+    <div class="rp-prog" aria-hidden="true"><i style="width:${pct}%"></i></div>
+    <div class="rp-row">
+      <span class="rp-tag">▶ Replay</span>
+      <button class="icon-btn" data-act="rpplay" aria-label="${rp.playing?'Pause':'Play'}" ${done?'disabled':''}>${rp.playing?'⏸':'▶'}</button>
+      <button class="icon-btn" data-act="rpstep" aria-label="One step" ${done||rp.playing?'disabled':''}>⏭</button>
+      <button class="chip" data-act="rpspeed" aria-label="Speed">${rp.speed}×</button>
+      <span class="rp-step">${done ? 'End of the game' : `Step ${rp.i+1} of ${rp.cmds.length}`}</span>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn sm ghost" data-act="rpexit">Exit</button>
+    </div>
+    <div class="rp-row rp-seats"><span class="tiny">Watch as</span>${G.players.map(p=>`<button class="chip ${p.idx===rp.seat?'on':''}" data-act="rpseat" data-i="${p.idx}"><span class="dot" style="--pc:${PCOLORS[p.idx]};display:inline-block"></span> ${esc(p.name)}</button>`).join('')}</div>
+    ${rp.err ? `<div class="rp-err">${esc(rp.err)}</div>` : ''}
+  </div>`;
+}
+
+/* The Replay page: load an exported game, or pick one from the match history. */
+function rpLogSheetHTML(){
+  const f = UI.rpLoaded;
+  if(!f || !f.log) return '';
+  const pc = i => PCOLORS[i] || 'var(--ui-text)';
+  return `<div class="scrim" data-act="closesheet"></div><div class="sheet">
+    <div class="sheet-head"><h3>Game log</h3><button class="btn sm ghost" data-act="closesheet">Close</button></div>
+    <div class="log">${f.log.map(l=>l.rd ? `<div class="rd">${esc(l.t)}</div>` : `<div>${l.w!=null?`<b style="color:${pc(l.w)}">●</b> `:''}${esc(l.t)}</div>`).join('')}</div>
+  </div>`;
+}
+function viewReplay(){
+  const f = UI.rpLoaded;
+  const kept = PROFILE.games.filter(g=>g.replay || g.hasReplay).slice(0, 30);
+  const card = f ? (()=>{
+    const sm = f.summary || {};
+    const ps = (sm.players||[]).map((p,i)=>`<span class="chip"><span class="dot" style="--pc:${PCOLORS[i]};display:inline-block"></span> ${esc(p.name)}${p.bot?' · bot':''}${sm.won?` · <b>${sm.won[i]}</b>`:''}</span>`).join('');
+    return `<div class="card-panel stack rp-file">
+      <div class="row" style="gap:8px;flex-wrap:wrap">${ps}</div>
+      <p class="tiny muted" style="margin:0">${sm.at?whenText2(sm.at)+' · ':''}${sm.rounds||6} rounds${f.replay?` · ${f.replay.cmds.length} moves`:''}</p>
+      ${UI.rpError ? `<div class="acct-err">${esc(UI.rpError)}</div>` : ''}
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        ${f.replay ? `<button class="btn primary" data-act="rpstart">Watch the replay</button>` : ''}
+        ${f.log ? `<button class="btn" data-act="rplog">Read the log</button>` : ''}
+      </div>
+    </div>`; })() : (UI.rpError ? `<div class="acct-err">${esc(UI.rpError)}</div>` : '');
+  return `${topbar('Replay')}
+  <div class="page stack replay-page">
+    <p class="muted" style="margin:0">Load a game you exported and watch it play out again, move by move, with every animation.</p>
+    <label class="btn primary rp-load">Load an exported game…<input type="file" accept=".json,application/json" data-up="gamefile" hidden></label>
+    ${card}
+    <div class="section-head"><h3>From your match history</h3><p>${kept.length?'tap to watch':''}</p></div>
+    ${kept.length ? `<div class="pf-list">${kept.map(g=>`<button class="pf-game" data-act="rphist" data-id="${esc(g.id)}">
+        <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
+        <span class="pf-main"><b>vs ${opponentsOf(g).map(o=>esc(o.name)).join(', ')}</b><span>${whenText2(g.at)}</span></span>
+        <span class="pf-score">${scoreLine(g)}<small>▶ watch</small></span></button>`).join('')}</div>` : `<div class="empty-note">Games you finish from now on can be watched again here.</div>`}
+  </div>`;
+}
+/** The replay for a history entry, fetching it from the account if needed. */
+async function histReplay(id){
+  const g = PROFILE.games.find(x=>x.id===id);
+  if(!g) return;
+  if(!g.replay && g.hasReplay && ACCT){
+    toast('Loading the replay…');
+    try{ const r = await acctCall('GET', '/api/account/games/'+encodeURIComponent(id)); if(r.game){ g.replay = r.game.replay||null; g.log = g.log || r.game.log || null; } }catch(e){}
+  }
+  if(!g.replay){ toast('This game has no replay.'); return; }
+  startReplay(JSON.parse(gameFile(g)));
+}
+
 function profileStats(){
   const g = PROFILE.games;
   const n = k => g.filter(x=>x.result===k).length;
@@ -8066,6 +8579,354 @@ function whenText2(ts){
   const time = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
   if(d.toDateString()===now.toDateString()) return 'Today, '+time;
   return d.toLocaleDateString([], {month:'short', day:'numeric'})+', '+time;
+}
+
+/* ------------------------------------------------------------------
+   SOCIAL — friends, other players' profiles, invites and comments.
+   Everything goes through the account server; signed out, the tab says so.
+   ------------------------------------------------------------------ */
+const SO = { data:null, loading:false, err:'', q:'', results:null, qT:null, busy:{},
+             user:null, prof:null, profErr:'', game:null, gameOwner:null, comments:null, draft:'',
+             popup:null, seen:new Set(), pollT:null, incoming:0, invited:{} };
+const FRIENDS_MAX = 25, COMMENTS_MAX = 10;
+async function soLoad(){
+  if(!ACCT) return;
+  SO.loading = true; SO.err = '';
+  try{ SO.data = await acctCall('GET', '/api/social'); SO.at = Date.now(); SO.incoming = SO.data.incoming.length; (SO.data.invites||[]).forEach(i=>SO.seen.add(i.from+':'+i.code+':'+i.at)); }
+  catch(e){ SO.err = e.message || 'Could not reach the server.'; }
+  SO.loading = false;
+  if(UI.screen==='social') render();
+}
+async function soAct(kind, user, extra){
+  const key = kind+':'+user;
+  if(SO.busy[key]) return;
+  SO.busy[key] = true; render();
+  try{
+    const r = await acctCall('POST', '/api/social/'+kind, Object.assign({user}, extra||{}));
+    if(kind==='request') toast(r.friends ? 'You’re friends now.' : 'Request sent.');
+    if(kind==='accept') toast('You’re friends now.');
+    if(kind==='invite'){ SO.invited[user] = ON.code; toast('Invite sent.'); }
+  }catch(e){ toast(e.message || 'That didn’t work.'); }
+  SO.busy[key] = false;
+  await soLoad();
+  if(SO.user===user) soOpenUser(user, true);
+  render();
+}
+function soSearch(q){
+  SO.q = q;
+  clearTimeout(SO.qT);
+  const v = q.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
+  if(!v){ SO.results = null; render(); return; }
+  SO.qT = setTimeout(async ()=>{
+    try{ const r = await acctCall('GET', '/api/users?q='+encodeURIComponent(v)); if(SO.q===q){ SO.results = r.users; renderKeepFocus(); } }
+    catch(e){ SO.results = []; renderKeepFocus(); }
+  }, 250);
+}
+/** Re-render without losing the caret in the search box. */
+function renderKeepFocus(){
+  const el = document.activeElement, k = el && el.dataset && el.dataset.so;
+  const pos = el && el.selectionStart;
+  render();
+  if(k){ const n = document.querySelector(`[data-so="${k}"]`); if(n){ n.focus(); try{ n.setSelectionRange(pos, pos); }catch(e){} } }
+}
+async function soOpenUser(user, quiet){
+  SO.user = user; if(!quiet){ SO.prof = null; SO.profErr = ''; }
+  UI.screen = 'player'; UI.sheet = null; render();
+  try{ SO.prof = await acctCall('GET', '/api/users/'+encodeURIComponent(user)); }
+  catch(e){ SO.profErr = e.message || 'Could not load that profile.'; }
+  if(UI.screen==='player') render();
+}
+async function soOpenGame(owner, id){
+  SO.gameOwner = owner; SO.game = {id, loading:true}; SO.comments = null; SO.draft = '';
+  UI.sheet = 'pgame'; render();
+  try{
+    const r = await acctCall('GET', `/api/users/${encodeURIComponent(owner)}/games/${encodeURIComponent(id)}`);
+    if(SO.game && SO.game.id===id){ SO.game = r.game; SO.comments = r.comments; }
+  }catch(e){ if(SO.game && SO.game.id===id) SO.game = {id, error: e.message || 'Could not load that game.'}; }
+  if(UI.sheet==='pgame' || UI.sheet==='hist') render();
+}
+/** Comments on one of your own games, for the history sheet. */
+async function soLoadComments(id){
+  if(!ACCT) return;
+  SO.gameOwner = ACCT.user; SO.game = {id, own:true}; SO.comments = null;
+  try{ const r = await acctCall('GET', `/api/users/${encodeURIComponent(ACCT.user)}/games/${encodeURIComponent(id)}`); if(SO.game.id===id) SO.comments = r.comments; }
+  catch(e){ if(SO.game.id===id) SO.comments = []; }
+  if(UI.sheet==='hist') render();
+}
+async function soComment(){
+  const text = (SO.draft||'').trim();
+  if(!text || !SO.game) return;
+  try{
+    const r = await acctCall('POST', `/api/users/${encodeURIComponent(SO.gameOwner)}/games/${encodeURIComponent(SO.game.id)}/comments`, {text});
+    SO.comments = r.comments; SO.draft = '';
+  }catch(e){ toast(e.message || 'That didn’t post.'); }
+  render();
+}
+async function soDelComment(cid){
+  try{
+    const r = await acctCall('DELETE', `/api/users/${encodeURIComponent(SO.gameOwner)}/games/${encodeURIComponent(SO.game.id)}/comments/${cid}`);
+    SO.comments = r.comments;
+  }catch(e){ toast(e.message || 'That didn’t delete.'); }
+  render();
+}
+/* Signed in, the game asks every so often whether anyone has sent a friend
+   request or an invite. A new invite pops up wherever you are. */
+function socialPollStart(){
+  if(SO.pollT || !ACCT || !accountsAvailable()) return;
+  const tick = async ()=>{
+    SO.pollT = setTimeout(tick, document.hidden ? 60000 : 20000);
+    if(!ACCT){ clearTimeout(SO.pollT); SO.pollT = null; return; }
+    try{
+      const r = await acctCall('GET', '/api/social/poll');
+      const before = SO.incoming; SO.incoming = r.incoming;
+      const fresh = (r.invites||[]).find(i=>!SO.seen.has(i.from+':'+i.code+':'+i.at));
+      (r.invites||[]).forEach(i=>SO.seen.add(i.from+':'+i.code+':'+i.at));
+      if(SO.data) SO.data.invites = r.invites||[];
+      const inRoomAlready = inRoom() && ON.code===(fresh&&fresh.code);
+      if(fresh && !inRoomAlready){ SO.popup = fresh; render(); }
+      else if(before!==SO.incoming || UI.screen==='social' || UI.screen==='title') render();
+    }catch(e){}
+  };
+  SO.pollT = setTimeout(tick, 1500);
+}
+function soJoin(inv){
+  SO.popup = null;
+  if(inRoom()) leaveRoom();
+  if(G && !G.online && !G.isView && !G.over && UI.screen==='game'){ /* a local game is left where it is */ }
+  ON.joinCode = inv.code; ON.role = 'guest'; ON.error = '';
+  UI.screen = 'online'; UI.sheet = null;
+  acctCall('POST', '/api/social/dismiss', {code:inv.code}).catch(()=>{});
+  if(SO.data) SO.data.invites = (SO.data.invites||[]).filter(i=>i.code!==inv.code);
+  if(!onlineName()) setProfileName(ACCT ? ACCT.user : 'Player');
+  joinRoom(inv.code);
+}
+function invitePopupHTML(){
+  const i = SO.popup;
+  if(!i) return '';
+  return `<div class="scrim" data-act="sodismisspop"></div><div class="sheet invite-pop" role="dialog" aria-label="Game invite">
+    <div class="ip-head"><span class="acct-badge" aria-hidden="true">${esc((i.name||i.from).charAt(0).toUpperCase())}</span>
+      <div><b>${esc(i.name||i.from)}</b> invited you to a game<span class="tiny muted">Room ${esc(i.code)} · @${esc(i.from)}</span></div></div>
+    <div class="row" style="gap:8px">
+      <button class="btn primary" data-act="sojoin" data-code="${esc(i.code)}" data-from="${esc(i.from)}">Join the game</button>
+      <button class="btn ghost" data-act="sodismisspop">Not now</button>
+    </div>
+    <p class="tiny muted" style="margin:0">It stays in your Social tab for two hours.</p>
+  </div>`;
+}
+const recordText = r => !r ? '' : r.played ? `${r.wins}–${r.losses}${r.draws?'–'+r.draws:''} · ${Math.round(100*r.wins/r.played)}% wins` : 'no games yet';
+function viewSocial(){
+  if(!accountsAvailable()) return `${topbar('Social')}<div class="page stack"><div class="callout">Friends work on the website copy of Territory, with an account.</div></div>`;
+  if(!ACCT) return `${topbar('Social')}<div class="page stack social-page">
+      <div class="card-panel stack"><b>Sign in to find friends</b>
+      <p class="tiny muted" style="margin:0">With an account you can add up to ${FRIENDS_MAX} friends, see their records and games, comment on matches, and invite friends straight into a room you host.</p>
+      <button class="btn primary" data-act="go" data-screen="profile" style="align-self:flex-start">Sign in or make an account</button></div></div>`;
+  if((!SO.data || Date.now()-(SO.at||0) > 30000) && !SO.loading && !SO.err){ SO.at = Date.now(); soLoad(); }
+  const d = SO.data;
+  const who = (u, name) => `<span class="so-who"><span class="acct-badge sm" aria-hidden="true">${esc((name||u).charAt(0).toUpperCase())}</span><span><b>${esc(name||u)}</b><small>@${esc(u)}</small></span></span>`;
+  const busy = (k,u) => SO.busy[k+':'+u] ? 'disabled' : '';
+  const invites = d && d.invites && d.invites.length ? `<div class="section-head"><h3>Game invites</h3></div>
+    <div class="so-list">${d.invites.map(i=>`<div class="so-row invite">${who(i.from, i.name)}<span class="tiny muted">Room ${esc(i.code)}</span>
+      <button class="btn sm primary" data-act="sojoin" data-code="${esc(i.code)}" data-from="${esc(i.from)}">Join game</button>
+      <button class="btn sm ghost" data-act="sodismiss" data-code="${esc(i.code)}" aria-label="Dismiss">✕</button></div>`).join('')}</div>` : '';
+  const incoming = d && d.incoming.length ? `<div class="section-head"><h3>Friend requests</h3><p>${d.incoming.length}</p></div>
+    <div class="so-list">${d.incoming.map(o=>`<div class="so-row">${who(o.user, o.name)}
+      <button class="btn sm primary" data-act="soaccept" data-u="${esc(o.user)}" ${busy('accept',o.user)}>Accept</button>
+      <button class="btn sm ghost" data-act="sodecline" data-u="${esc(o.user)}" ${busy('decline',o.user)}>Decline</button></div>`).join('')}</div>` : '';
+  const outgoing = d && d.outgoing.length ? `<div class="so-sub">Waiting for an answer</div>
+    <div class="so-list">${d.outgoing.map(o=>`<div class="so-row dim">${who(o.user, o.name)}<span class="tiny muted">Request sent</span>
+      <button class="btn sm ghost" data-act="sodecline" data-u="${esc(o.user)}" ${busy('decline',o.user)}>Take back</button></div>`).join('')}</div>` : '';
+  const friends = d ? (d.friends.length ? `<div class="so-list">${d.friends.map(f=>`<button class="so-row tap" data-act="souser" data-u="${esc(f.user)}">${who(f.user, f.name)}
+      <span class="so-rec">${esc(recordText(f.record))}</span>
+      ${inRoom() && isHost() && ON.lobby ? `<span class="btn sm ${SO.invited[f.user]===ON.code?'ghost':''}" data-act="soinvite" data-u="${esc(f.user)}">${SO.invited[f.user]===ON.code?'Invited':'Invite'}</span>` : '<span class="pf-go">›</span>'}</button>`).join('')}</div>`
+      : `<div class="empty-note">No friends yet. Search for a username below.</div>`) : '';
+  const results = SO.results==null ? '' : SO.results.length ? `<div class="so-list">${SO.results.map(u=>{
+      const rel = !d ? '' : d.friends.some(f=>f.user===u.user) ? 'friend' : d.outgoing.some(o=>o.user===u.user) ? 'asked' : d.incoming.some(o=>o.user===u.user) ? 'asking' : '';
+      return `<div class="so-row">${who(u.user, u.name)}
+        <button class="btn sm ghost" data-act="souser" data-u="${esc(u.user)}">View</button>
+        ${rel==='friend' ? '<span class="tiny muted">Friends</span>' : rel==='asked' ? '<span class="tiny muted">Asked</span>'
+          : `<button class="btn sm" data-act="sorequest" data-u="${esc(u.user)}" ${busy('request',u.user)} ${d && d.friends.length>=FRIENDS_MAX?'disabled':''}>${rel==='asking'?'Accept':'Add friend'}</button>`}</div>`; }).join('')}</div>`
+    : `<div class="empty-note">Nobody by that username.</div>`;
+  return `${topbar('Social', `<button class="btn sm ghost" data-act="soreload" aria-label="Refresh">↻</button>`)}
+  <div class="page stack social-page">
+    ${SO.err ? `<div class="acct-err">${esc(SO.err)}</div>` : ''}
+    ${inRoom() && isHost() && ON.lobby ? `<div class="callout">You're hosting room <b>${esc(ON.code)}</b> — tap Invite next to a friend and it pops up on their screen.</div>` : ''}
+    ${invites}${incoming}
+    <div class="section-head"><h3>Friends</h3><p>${d ? d.friends.length+' of '+FRIENDS_MAX : ''}</p></div>
+    ${!d && SO.loading ? '<div class="net-wait"><span class="spinner"></span>Loading…</div>' : friends}
+    ${outgoing}
+    <div class="section-head"><h3>Find players</h3></div>
+    <input type="search" data-so="q" placeholder="Search by username" value="${esc(SO.q)}" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Search by username">
+    ${results}
+  </div>`;
+}
+function viewPlayer(){
+  const p = SO.prof;
+  const back = `<button class="btn sm ghost" data-act="go" data-screen="social">Social</button>`;
+  if(SO.profErr) return `${topbar('Player', back)}<div class="page stack"><div class="acct-err">${esc(SO.profErr)}</div></div>`;
+  if(!p) return `${topbar('Player', back)}<div class="page stack"><div class="net-wait"><span class="spinner"></span>Loading…</div></div>`;
+  const r = p.record, tile = (n, label, cls) => `<div class="pf-tile ${cls||''}"><b>${n}</b><span>${label}</span></div>`;
+  const d = SO.data, full = d && d.friends.length >= FRIENDS_MAX;
+  const relBtn = {self:'', friend:`<button class="btn sm ghost" data-act="soremove" data-u="${esc(p.username)}">${UI.soRemove===p.username?'Tap again to remove':'Remove friend'}</button>`,
+    asked:`<span class="chip">Request sent</span>`, asking:`<button class="btn sm primary" data-act="soaccept" data-u="${esc(p.username)}">Accept friend request</button>`,
+    none:`<button class="btn sm primary" data-act="sorequest" data-u="${esc(p.username)}" ${full?'disabled':''}>Add friend</button>`}[p.relation] || '';
+  const rows = p.games.map(g=>{
+    const opp = g.players.filter((_,i)=>i!==g.seat).map(o=>esc(o.name)+(o.bot?' <i>(bot)</i>':'')).join(', ');
+    return `<button class="pf-game" data-act="sogame" data-u="${esc(p.username)}" data-id="${esc(g.id)}">
+      <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
+      <span class="pf-main"><b>vs ${opp||'nobody'}</b><span>${g.mode==='online'?'Online':'Local'} · ${whenText2(g.at)}${g.comments?` · \u{1F4AC} ${g.comments}`:''}</span></span>
+      <span class="pf-score">${scoreLine(g)}<small>planets</small></span></button>`;
+  }).join('');
+  return `${topbar(esc(p.name), back)}
+  <div class="page stack profile-page">
+    <div class="card-panel acct-card in"><div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap">
+      <span class="acct-badge" aria-hidden="true">${esc(p.name.charAt(0).toUpperCase())}</span>
+      <div class="acct-who" style="flex:1"><b>${esc(p.name)}</b><span>@${esc(p.username)}</span></div>${relBtn}</div></div>
+    <div class="pf-tiles">${tile(r.played,'played')}${tile(r.wins,'wins','win')}${tile(r.losses,'losses','loss')}${tile(r.draws,'draws')}${tile(r.played?Math.round(100*r.wins/r.played)+'%':'—','win rate')}</div>
+    <div class="section-head"><h3>Match history</h3><p>${p.games.length ? 'latest '+p.games.length+' · tap for the log, replay and comments' : ''}</p></div>
+    ${rows ? `<div class="pf-list">${rows}</div>` : `<div class="empty-note">No games yet.</div>`}
+  </div>`;
+}
+/** The comments under a game: anyone signed in can add one (up to ten); the
+    game's owner can delete any of them, and you can delete your own. */
+function commentsHTML(){
+  if(!ACCT || !SO.game) return '';
+  const list = SO.comments;
+  if(list==null) return `<div class="sb-label" style="margin-top:14px">Comments</div><div class="net-wait"><span class="spinner"></span>Loading comments…</div>`;
+  const owner = SO.gameOwner===ACCT.user;
+  return `<div class="sb-label" style="margin-top:14px">Comments · ${list.length} of ${COMMENTS_MAX}</div>
+    <div class="so-comments">${list.length ? list.map(c=>`<div class="so-comment">
+      <div class="row" style="gap:6px;align-items:baseline;flex-wrap:nowrap"><b>${esc(c.name)}</b><span class="tiny muted" style="flex:1">@${esc(c.author)} · ${whenText2(c.at)}</span>
+      ${owner || c.author===ACCT.user ? `<button class="btn sm ghost" data-act="sodelc" data-id="${esc(c.id)}" aria-label="Delete comment">Delete</button>` : ''}</div>
+      <p>${esc(c.text)}</p></div>`).join('') : '<div class="empty-note">No comments yet.</div>'}</div>
+    ${list.length < COMMENTS_MAX ? `<div class="row so-compose" style="gap:8px;flex-wrap:nowrap">
+      <input data-so="draft" maxlength="280" placeholder="${owner?'Add a note to your game':'Say something about this game'}" value="${esc(SO.draft||'')}" aria-label="Comment">
+      <button class="btn sm primary" data-act="sopost">Post</button></div>` : '<p class="tiny muted">This game has the most comments it can hold.</p>'}`;
+}
+function playerGameSheetHTML(){
+  const g = SO.game;
+  if(!g) return '';
+  const head = `<div class="sheet-head"><h3>${g.result ? `${esc((SO.prof&&SO.prof.name)||SO.gameOwner)} · ${RESULT_WORD[g.result]} ${scoreLine(g)}` : 'Game'}</h3><button class="btn sm ghost" data-act="closesheet">Close</button></div>`;
+  if(g.loading) return `<div class="scrim" data-act="closesheet"></div><div class="sheet">${head}<div class="net-wait"><span class="spinner"></span>Loading…</div></div>`;
+  if(g.error) return `<div class="scrim" data-act="closesheet"></div><div class="sheet">${head}<div class="acct-err">${esc(g.error)}</div></div>`;
+  const pc = i => PCOLORS[i] || 'var(--ui-text)';
+  const chips = g.players.map((p,i)=>`<span class="chip"><span class="dot" style="--pc:${pc(i)};display:inline-block"></span> ${esc(p.name)}${p.bot?' · bot':''} · <b>${g.won[i]}</b></span>`).join('');
+  const rows = (g.rows||[]).map(r=>`<div class="score-line"><span class="pl">${esc(r.name)}</span>
+      <span class="pf-sc">${r.scores.map((v,i)=>`<b class="${r.winner===i?'top':''}"><span class="dot" style="--pc:${pc(i)}"></span>${v}</b>`).join('<i>–</i>')}</span>
+      <span class="pf-win">${r.winner==null ? 'contested' : esc(g.players[r.winner].name)}</span></div>`).join('');
+  const log = g.log ? g.log.map(l=>l.rd ? `<div class="rd">${esc(l.t)}</div>` : `<div>${l.w!=null?`<b style="color:${pc(l.w)}">●</b> `:''}${esc(l.t)}</div>`).join('') : '';
+  return `<div class="scrim" data-act="closesheet"></div><div class="sheet">${head}
+    <p class="tiny muted" style="margin-top:-6px">${g.mode==='online'?'Online':'Local'} · ${whenText2(g.at)} · ${g.rounds} rounds</p>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">${chips}</div>
+    ${rows}
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">
+      ${g.replay ? `<button class="btn sm" data-act="sowatch">▶ Watch replay</button>` : ''}
+      <button class="btn sm" data-act="soexport">Export game</button>
+    </div>
+    ${commentsHTML()}
+    <div class="sb-label" style="margin-top:14px">Game log</div>
+    ${log ? `<div class="log">${log}</div>` : '<div class="empty-note">No log was kept for this game.</div>'}
+  </div>`;
+}
+
+/* --- the Stats page: everything adds up from the match history ---------- */
+function statsFrom(games){
+  const withStats = games.filter(g=>g.stats && g.stats.v);
+  const cards = {}, planets = {};
+  games.forEach(g=>(g.rows||[]).forEach(r=>{ const p = planets[r.name] || (planets[r.name] = {name:r.name, seen:0, won:0, slots:[]}); p.seen++; if(r.winner===g.seat) p.won++; }));
+  let roundsN = 0, powerRoundSum = 0, powerGameSum = 0, bestRound = null, bestGame = null;
+  let drawGameSum = 0, bestDrawRound = null, bestDrawGame = null;
+  withStats.forEach(g=>{
+    const st = g.stats;
+    /* cards: once per game for play and win rates, every copy for planets held */
+    const seenHere = new Set();
+    (st.cards||[]).forEach(c=>{
+      const k = cards[c.n] || (cards[c.n] = {name:c.n, plays:0, games:0, gameWins:0, onBoard:0, planetWins:0});
+      k.plays++;
+      if(!seenHere.has(c.n)){ seenHere.add(c.n); k.games++; if(st.won) k.gameWins++; }
+      if(c.pw!=null){ k.onBoard++; if(c.pw) k.planetWins++; }
+    });
+    (st.slots||[]).forEach(pl=>{
+      const p = planets[pl.p] || (planets[pl.p] = {name:pl.p, seen:0, won:0, slots:[]});
+      pl.s.forEach((sl,i)=>{
+        const key = sl.c+'→'+sl.r;
+        let row = p.slots.find(x=>x.key===key && x.i===i);
+        if(!row){ row = {key, i, c:sl.c, r:sl.r, o:0, m:0}; p.slots.push(row); }
+        row.o += sl.o; row.m += sl.m;
+      });
+    });
+    const pw = st.power||[];
+    pw.forEach((v,i)=>{ const gain = v - (i ? pw[i-1] : 0); roundsN++; powerRoundSum += gain;
+      if(!bestRound || gain > bestRound.v) bestRound = {v:gain, at:g.at, rd:i+1}; });
+    const fin = pw.length ? pw[pw.length-1] : 0;
+    powerGameSum += fin;
+    if(!bestGame || fin > bestGame.v) bestGame = {v:fin, at:g.at};
+    const dr = st.draws||[], total = dr.reduce((a,b)=>a+b, 0);
+    drawGameSum += total;
+    if(!bestDrawGame || total > bestDrawGame.v) bestDrawGame = {v:total, at:g.at};
+    dr.forEach((v,i)=>{ if(!bestDrawRound || v > bestDrawRound.v) bestDrawRound = {v, at:g.at, rd:i+1}; });
+  });
+  const n = withStats.length;
+  return {
+    n, total: games.length,
+    cards: Object.values(cards),
+    planets: Object.values(planets),
+    power: {perRound: roundsN ? powerRoundSum/roundsN : null, perGame: n ? powerGameSum/n : null, bestRound, bestGame},
+    draws: {perGame: n ? drawGameSum/n : null, bestRound: bestDrawRound, bestGame: bestDrawGame}
+  };
+}
+const pct = (a,b) => b ? Math.round(100*a/b)+'%' : '—';
+const num1 = v => v==null ? '—' : (Math.round(v*10)/10).toString();
+function statsHTML(){
+  const S = statsFrom(PROFILE.games);
+  if(!S.total) return `<div class="empty-note">Finish a game and your numbers start here.</div>`;
+  if(!S.n) return `<div class="empty-note">These games were played before stats were kept. Finish a new one and your numbers start here.</div>`;
+  const sortBy = UI.stSort || 'games';
+  const keyF = {games:c=>c.games, win:c=>c.games ? c.gameWins/c.games : -1, planet:c=>c.onBoard ? c.planetWins/c.onBoard : -1, name:c=>0}[sortBy];
+  const cards = S.cards.slice().sort((a,b)=> sortBy==='name' ? a.name.localeCompare(b.name) : (keyF(b)-keyF(a)) || (b.games-a.games) || a.name.localeCompare(b.name));
+  const showAll = UI.stAll;
+  const sortChip = (k,l) => `<button class="chip ${sortBy===k?'on':''}" data-act="stsort" data-v="${k}">${l}</button>`;
+  const rec = (label, r, unit) => `<div class="st-rec"><b>${r ? r.v : '—'}</b><span>${label}</span>${r ? `<i>${r.rd?'round '+r.rd+' · ':''}${whenText2(r.at)}</i>` : ''}</div>`;
+  const bar = (frac) => `<span class="st-bar" aria-hidden="true"><i style="width:${Math.round(100*Math.max(0,Math.min(1,frac||0)))}%"></i></span>`;
+  return `
+  <p class="tiny muted" style="margin:0">From ${S.n} game${S.n===1?'':'s'} with stats${S.total>S.n?` (${S.total-S.n} older one${S.total-S.n===1?'':'s'} only count toward planets seen)`:''}. Everything is from your seat.</p>
+
+  <div class="section-head"><h3>\u{1F4AA} Power</h3></div>
+  <div class="st-grid">
+    <div class="st-rec"><b>${num1(S.power.perRound)}</b><span>average gained per round</span></div>
+    <div class="st-rec"><b>${num1(S.power.perGame)}</b><span>average on the table at the end</span></div>
+    ${rec('most gained in one round', S.power.bestRound)}
+    ${rec('most at the end of a game', S.power.bestGame)}
+  </div>
+
+  <div class="section-head"><h3>\u{1F0CF} Cards drawn</h3><p>not counting the opening hand</p></div>
+  <div class="st-grid">
+    <div class="st-rec"><b>${num1(S.draws.perGame)}</b><span>average per game</span></div>
+    ${rec('most in one round', S.draws.bestRound)}
+    ${rec('most in one game', S.draws.bestGame)}
+  </div>
+
+  <div class="section-head"><h3>Cards you played</h3><p>${cards.length} different</p></div>
+  <div class="row" style="gap:6px;flex-wrap:wrap">${sortChip('games','Most played')}${sortChip('win','Game win %')}${sortChip('planet','Planet win %')}${sortChip('name','Name')}</div>
+  <div class="st-table st-cards" role="table">
+    <div class="st-tr st-th" role="row"><span role="columnheader">Card</span><span role="columnheader" title="Share of your games it was played in">Play rate</span><span role="columnheader" title="Games won when you played it">Game win</span><span role="columnheader" title="When it ended the game on a planet: how often you won that planet">Planet win</span></div>
+    ${(showAll ? cards : cards.slice(0, 12)).map(c=>`<div class="st-tr" role="row">
+      <span class="st-nm" role="cell">${esc(c.name)}<small>${c.plays} play${c.plays===1?'':'s'}</small></span>
+      <span role="cell">${pct(c.games, S.n)}${bar(c.games/S.n)}</span>
+      <span role="cell">${pct(c.gameWins, c.games)}${bar(c.games ? c.gameWins/c.games : 0)}</span>
+      <span role="cell">${c.onBoard ? pct(c.planetWins, c.onBoard) : '—'}${bar(c.onBoard ? c.planetWins/c.onBoard : 0)}</span>
+    </div>`).join('')}
+  </div>
+  ${cards.length > 12 ? `<button class="btn sm ghost" data-act="stall" style="align-self:flex-start">${showAll ? 'Show fewer' : `Show all ${cards.length}`}</button>` : ''}
+
+  <div class="section-head"><h3>Planets</h3><p>how often each came up, and how often your slots there paid</p></div>
+  <div class="st-planets">${S.planets.sort((a,b)=>b.seen-a.seen || a.name.localeCompare(b.name)).map(p=>`
+    <div class="st-planet card-panel">
+      <div class="row" style="gap:8px;align-items:baseline"><b style="flex:1">${esc(p.name)}</b><span class="tiny muted">seen ${p.seen}× · won ${pct(p.won, p.seen)}</span></div>
+      ${p.slots.length ? `<div class="st-slots">${p.slots.sort((a,b)=>a.i-b.i).map(sl=>`<div class="st-slot" title="${sl.o} time${sl.o===1?'':'s'} a card of yours was there when rewards were checked">
+          <span class="st-cond">${esc(sl.c)}<br><b>${esc(sl.r)}</b></span>
+          <span class="st-pct">${sl.o ? pct(sl.m, sl.o) : '—'}</span>${bar(sl.o ? sl.m/sl.o : 0)}
+          <small>${sl.m} of ${sl.o}</small></div>`).join('')}</div>` : `<div class="tiny muted">No slot data yet.</div>`}
+    </div>`).join('')}</div>`;
 }
 
 function viewProfile(){
@@ -8091,9 +8952,14 @@ function viewProfile(){
       ${tile(st.played, 'played')}${tile(st.wins, 'wins', 'win')}${tile(st.losses, 'losses', 'loss')}${tile(st.draws, 'draws')}
       ${tile(st.rate==null ? '—' : st.rate+'%', 'win rate')}
     </div>
-    <div class="section-head"><h3>Match history</h3><p>${st.played ? 'newest first · tap a game for its planets and log' : ''}</p></div>
+    <div class="seg pf-tabs" role="tablist">
+      <button class="chip ${UI.pfTab!=='stats'?'on':''}" role="tab" aria-selected="${UI.pfTab!=='stats'}" data-act="pftab" data-v="history">Match history</button>
+      <button class="chip ${UI.pfTab==='stats'?'on':''}" role="tab" aria-selected="${UI.pfTab==='stats'}" data-act="pftab" data-v="stats">Stats</button>
+    </div>
+    ${UI.pfTab==='stats' ? statsHTML() : `
+    <div class="section-head"><h3>Match history</h3><p>${st.played ? 'newest first · tap a game for its planets, log and replay' : ''}</p></div>
     ${rows ? `<div class="pf-list">${rows}</div>` : `<div class="empty-note">No games yet. Finished games land here — sandbox games don’t count.</div>`}
-    ${rows ? `<button class="btn sm ${UI.pfClear?'danger':'ghost'}" data-act="histclear" style="align-self:flex-start">${UI.pfClear?'Tap again to clear the history':'Clear match history'}</button>` : ''}
+    ${rows ? `<button class="btn sm ${UI.pfClear?'danger':'ghost'}" data-act="histclear" style="align-self:flex-start">${UI.pfClear?'Tap again to clear the history':'Clear match history'}</button>` : ''}`}
     <p class="tiny muted">${ACCT ? 'Saved to your account: sign in on any browser or device to see it.' : `Stored in this browser only \u2014 sign in to keep it everywhere. The last ${LOGS_KEPT} games keep their full game log.`}</p>
   </div>`;
 }
@@ -8113,11 +8979,19 @@ function historySheetHTML(){
     <p class="tiny muted" style="margin-top:-6px">${g.mode==='online'?'Online':'On this device'} · ${whenText2(g.at)} · ${g.rounds} rounds${g.reason && g.reason!=='planets won' && g.result!=='draw' ? ' · decided by '+esc(g.reason) : ''}</p>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">${head}</div>
     ${rows}
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">
+      ${g.replay || g.hasReplay ? `<button class="btn sm" data-act="rphist" data-id="${esc(g.id)}">▶ Watch replay</button>` : ''}
+      ${g.log || g.replay ? `<button class="btn sm" data-act="histexport" data-id="${esc(g.id)}">Export game</button>` : ''}
+    </div>
+    ${ACCT && !(PROFILE.pending||[]).includes(g.id) ? (SO.game && SO.game.id===g.id && SO.game.own ? commentsHTML() : (soLoadComments(g.id), '')) : ''}
     <div class="sb-label" style="margin-top:14px">Game log</div>
     ${log ? `<div class="log">${log}</div>` : g.hasLog && ACCT ? '<div class="net-wait"><span class="spinner"></span>Loading the log\u2026</div>' : '<div class="empty-note">Only the result was kept for this older game.</div>'}
   </div>`;
 }
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
+document.addEventListener('input', e=>{ const k = e.target.dataset && e.target.dataset.so; if(!k) return;
+  if(k==='q') soSearch(e.target.value); else if(k==='draft') SO.draft = e.target.value; });
+document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.so==='draft'){ e.preventDefault(); soComment(); } });
 
 /* --- signing in ------------------------------------------------------------ */
 const AC = { busy:false, error:'', status:'', nameT:null, fetching:{}, flushing:false };
@@ -8148,6 +9022,11 @@ async function signIn(username, password, create){
     PROFILE = loadProfile();
     if(local.games.length) await acctCall('POST', '/api/account/games', {games: local.games}).catch(()=>{});
     if(create && local.name) await acctCall('PUT', '/api/account', {name: local.name}).catch(()=>{});
+    if(create){
+      /* a new profile plays with the site's own cards, planets and decks */
+      const lib = await fetchShippedLibrary();
+      if(lib && !G){ adoptLibrary(lib); fillSettings(); save(); }
+    }
     await syncAccount();
     toast(create ? `Account ${r.username} made. Your record now follows you.` : `Signed in as ${r.username}.`);
     UI.pfPass = '';
@@ -8162,6 +9041,7 @@ function signOut(){
   if(ACCT) acctCall('POST', '/api/account/logout').catch(()=>{});
   ACCT = null; try{ localStorage.removeItem(ACCOUNT_KEY); }catch(e){}
   PROFILE = loadProfile(); AC.error = ''; AC.status = '';
+  clearTimeout(SO.pollT); SO.pollT = null; SO.data = null; SO.results = null; SO.popup = null; SO.incoming = 0; SO.prof = null; SO.game = null;
   render();
 }
 /** Fetch the account: its name and history (logs come one game at a time). */
@@ -8171,18 +9051,350 @@ async function syncAccount(){
     await flushPending();
     const r = await acctCall('GET', '/api/account');
     if(!ACCT) return;
-    const logs = {}; PROFILE.games.forEach(g=>{ if(g.log) logs[g.id] = g.log; });
+    const logs = {}, reps = {}; PROFILE.games.forEach(g=>{ if(g.log) logs[g.id] = g.log; if(g.replay) reps[g.id] = g.replay; });
     const server = new Set(r.games.map(g=>g.id));
     const waiting = PROFILE.games.filter(g=>(PROFILE.pending||[]).includes(g.id) && !server.has(g.id));
-    PROFILE.games = waiting.concat(r.games.map(g=>logs[g.id] ? Object.assign(g, {log:logs[g.id]}) : g)).sort((a,b)=>(b.at||0)-(a.at||0));
+    PROFILE.games = waiting.concat(r.games.map(g=>{ if(logs[g.id]) g.log = logs[g.id]; if(reps[g.id]) g.replay = reps[g.id]; return g; })).sort((a,b)=>(b.at||0)-(a.at||0));
     if(!PROFILE.nameDirty) PROFILE.name = r.name;
     PROFILE.user = r.username;
     AC.status = 'synced';
     saveProfile();
     if(PROFILE.nameDirty) pushName();
+    socialPollStart();
   }catch(e){ if(ACCT) AC.status = 'offline'; }
   if(UI.screen==='profile' || UI.screen==='title') render();
 }
+
+/* ===================================================================
+   11. TUTORIAL
+   First the rules, a page at a time; then a short game against a scripted
+   opponent with a stacked deck, so every lesson lands where it should and
+   you win. The coach says what to do next and the board points at it.
+   =================================================================== */
+const TUT = { saved:null, step:0, page:0, active:false };
+const TUTOR_LIB = {
+  cards: [
+    {id:'t-blade',      name:'Blade',      cost:2, power:4, fx:[], art:E('\u{1F52A}')},
+    {id:'t-ward',       name:'Ward',       cost:2, power:5, fx:[{v:'discard', n:1}], art:E('\u{1F6E1}️')},
+    {id:'t-atlas',      name:'Atlas',      cost:2, power:3, fx:[{v:'draw', n:1}], art:E('\u{1F5FA}️')},
+    {id:'t-battleaxe',  name:'Battleaxe',  cost:4, power:8, fx:[], art:E('\u{1FA93}')},
+    {id:'t-sahel',      name:'Sahel',      cost:4, power:7, rarity:'exotic', fx:[{v:'move', dest:'here', target:{player:'choose', here:false, rule:'choice'}}], art:E('\u{1F3DC}️')},
+    {id:'t-aqitan',     name:'Aqitan',     cost:3, power:5, rarity:'exotic', fx:[{v:'givePower', t:'self', n:2, when:'activate', actCost:1, actUses:1}], art:E('\u{1F3E6}')},
+    {id:'t-starfall',   name:'Starfall',   cost:2, power:4, fx:[{v:'create', tok:'t-stardust', n:1}], art:E('\u{1F320}')},
+    {id:'t-lightspark', name:'Lightspark', cost:3, power:5, fx:[{v:'givePower', n:2, target:{player:'self', here:false, rule:'next'}}], art:E('\u{1F4AB}')},
+    {id:'t-ambrosia',   name:'Ambrosia',   cost:2, power:1, fx:[{v:'givePower', n:2, t:'alliesHere'}], art:E('\u{1F36F}')},
+    {id:'t-torch',      name:'Torch',      cost:2, power:2, fx:[{v:'burn', n:2, target:{player:'choose', here:true, rule:'choice'}}], art:E('\u{1F525}')},
+    {id:'t-amulet',     name:'Amulet of Cochrane', cost:5, power:6, rarity:'exotic', fx:[{v:'summon', at:'choice', from:'grave', pick:{owner:'any', rule:'strongest'}}], art:E('\u{1F9FF}')},
+    {id:'t-broadsword', name:'Broadsword', cost:3, power:6, fx:[], art:E('⚔️')},
+    {id:'t-dexter',     name:'Dexter',     cost:2, power:5, fx:[], art:E('\u{1FAF1}')},
+    {id:'t-lunariam',   name:'Lunariam',   cost:4, power:5, fx:[], art:E('\u{1F319}')},
+    {id:'t-dust',       name:'Stardust',   cost:1, power:3, fx:[], art:E('⭐')}
+  ],
+  tokens: [ {id:'t-stardust', name:'Stardust', cost:1, power:3, fx:[], art:E('⭐'), token:true} ],
+  planets: [
+    {id:'tp-verdant', name:'Verdant Shelf', art:E('\u{1F7E2}'), hue:'#4fd6b0', slots:[
+      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:2}},
+      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}},
+      {cond:{stat:'power', op:'>=', val:6}, rew:{type:'energy', amount:1}}]},
+    {id:'tp-silt', name:'Silt Hollow', art:E('\u{1F7E4}'), hue:'#c9a36a', slots:[
+      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:1}},
+      {cond:{stat:'cost', op:'>=', val:3}, rew:{type:'energy', amount:1}},
+      {cond:{stat:'any'}, rew:{type:'energy', amount:1}}]},
+    {id:'tp-ember', name:'Ember Ridge', art:E('\u{1F7E0}'), hue:'#f2856c', slots:[
+      {cond:{stat:'cost', op:'>=', val:4}, rew:{type:'energy', amount:2}},
+      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}},
+      {cond:{stat:'power', op:'<=', val:2}, rew:{type:'energy', amount:1}}]},
+    {id:'tp-ashen', name:'Ashen Gate', art:E('\u{1F7E3}'), hue:'#a482f0', slots:[
+      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:1}},
+      {cond:{stat:'cost', op:'>=', val:5}, rew:{type:'energy', amount:2}},
+      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}}]}
+  ],
+  decks: [{id:'t-deck', name:'Tutorial', cards:[]}]
+};
+/* Draw order, first card first. The first five are the opening hand. */
+const TUTOR_STACKS = [
+  ['t-blade','t-ward','t-atlas','t-battleaxe','t-sahel',  't-aqitan','t-starfall','t-lightspark','t-ambrosia','t-torch','t-amulet','t-broadsword','t-broadsword'],
+  ['t-dust','t-dexter','t-blade','t-broadsword','t-broadsword',  't-battleaxe','t-lunariam','t-dexter','t-lunariam','t-broadsword','t-blade','t-blade']
+];
+/* The opponent's moves, round by round: [card, planet, slot]. */
+const TUTOR_ENEMY = {
+  1:[['Stardust',1,0]],
+  2:[['Dexter',3,2],['Blade',0,0]],
+  3:[['Broadsword',0,1],['Broadsword',1,1]],
+  4:[['Battleaxe',0,2],['Lunariam',2,0]],
+  5:[['Dexter',1,2],['Broadsword',3,0]],
+  6:[['Lunariam',3,1]]
+};
+function tutorBotAct(p, send){
+  if(G.phase==='placement'){
+    if(!placingSeats().includes(p.idx)) return;
+    (TUTOR_ENEMY[G.round]||[]).forEach(([name, pi, si])=>{
+      const c = p.hand.find(c=>c.name===name && !p.placed.includes(c.uid));
+      if(c && !G.planets[pi].board[p.idx][si]) send({t:'place', uid:c.uid, p:pi, s:si});
+    });
+    send({t:'lock'});
+    return;
+  }
+  if(G.phase==='reveal' && revealerSeat()===p.idx){
+    const rest = faceDownOf(p);
+    if(rest.length) send({t:'flip', uid:rest[0].card.uid});
+    else send({t:'endReveal'});
+  }
+}
+/** Start the lesson game: the tutorial's own library stands in for yours
+    (nothing it does is saved), and the decks are stacked. */
+function startTutorGame(){
+  if(UI.rp) stopReplay(true);
+  if(TUT.saved==null){ TUT.saved = LIB; }
+  LIB = Object.assign(blankLibrary(), clone(TUTOR_LIB));
+  LIB.settings = Object.assign({}, TUT.saved.settings, {hide:false, turnTimer:0, turnTimerCustom:false});
+  RP_LIB_SWAPPED = true;
+  UI.screen = 'game'; UI.sheet = null;
+  newGame({players:2, kinds:['human','bot'], names:[profileName()||'Player', 'Rival'], planets:4, rounds:6,
+           tutorial:true, stacks:TUTOR_STACKS, planetOrder:TUTOR_LIB.planets.map(p=>p.id), placement:'turns', sandbox:false, online:false, mulligan:false});
+  G.gameId = 'tutorial';
+}
+function stopTutorGame(){
+  if(TUT.saved){ LIB = TUT.saved; TUT.saved = null; RP_LIB_SWAPPED = false; }
+  fxReset(); G = null;
+}
+/* --- the guided game: what the coach asks for, one step at a time ---------
+   A step either explains something (info, with a Next button) or asks for
+   one move. Only that move is accepted; anything else gets a gentle nudge. */
+const tc = n => ({card:n});
+const TUTOR_STEPS = [
+  {info:true, at:{r:1}, t:`<b>Welcome to the table.</b> Four planets, six rounds. Each planet has three slots for you (the row nearest you) and three for your Rival. Whoever has the most \u{1F4AA} Power on a planet at the end wins it — and whoever wins the most planets wins the game.`},
+  {info:true, at:{r:1}, t:`Under each slot is its <b>Condition → Reward</b>. <b>⚡≤2 → +2⚡</b> means: if the card sitting here costs 2 Energy or less, you get +2 Energy at the start of every round. Your slots and your Rival’s are identical.`},
+  {do:{t:'place', card:'Blade', p:0, s:0}, t:`You have <b>2⚡</b>. Drag <b>Blade</b> (2⚡, 4\u{1F4AA}) onto Verdant Shelf’s <b>first slot</b> — ⚡≤2 → +2⚡. Blade costs 2, so it satisfies the condition. (Or tap Blade, then tap the slot.)`},
+  {do:{t:'lock'}, t:`Cards go down <b>face down</b>, and you only need enough Energy to cover them — you pay when they’re turned over. That’s all you can afford: tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Blade'}, t:`<b>Reveal phase.</b> You reveal first this round. Tap <b>Blade</b> to turn it over: you pay its 2⚡ now, and any ability it has goes off.`},
+  {do:{t:'end'}, t:`Everything’s face up. Tap <b>End turn</b> and watch your Rival reveal.`},
+
+  {info:true, at:{r:2}, t:`<b>Round 2.</b> Everyone drew a card and gained 2⚡. Then every slot was checked: Blade meets ⚡≤2, so Verdant Shelf paid you <b>+2⚡</b> — the green outline shows it. You have <b>4⚡</b>. The Rival’s Stardust earned them +1⚡ on Silt Hollow the same way.`},
+  {do:{t:'place', card:'Ward', p:0, s:1}, t:`Put <b>Ward</b> (2⚡, 5\u{1F4AA}) in Verdant Shelf’s <b>second slot</b> — \u{1F4AA}≥5 → +1⚡. Its ability makes you <b>discard</b> a card: we’ll use that to throw away something expensive.`},
+  {do:{t:'place', card:'Atlas', p:1, s:0}, t:`Now <b>Atlas</b> (2⚡) on Silt Hollow’s <b>first slot</b> — ⚡≤2 → +1⚡. Atlas draws a card when revealed.`},
+  {do:{t:'lock'}, t:`4⚡ of cards for 4⚡. Tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Ward'}, t:`You choose the order cards turn over. Flip <b>Ward</b> first.`},
+  {do:{t:'discard', card:'Battleaxe'}, t:`Ward: discard a card. Choose <b>Battleaxe</b> — 8\u{1F4AA}, but 4⚡ is too much for now. It goes to the graveyard face up… remember it.`},
+  {do:{t:'flip', card:'Atlas'}, t:`Flip <b>Atlas</b> to draw a card.`},
+  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
+
+  {info:true, at:{r:3}, t:`<b>Round 3:</b> +2⚡ for the round and +4⚡ from three satisfied slots — <b>6⚡</b>. Income snowballs: the earlier a slot is satisfied, the more it pays.`},
+  {do:{t:'place', card:'Aqitan', p:1, s:1}, t:`<b>Aqitan</b> (3⚡) goes on Silt Hollow’s <b>middle slot</b> — ⚡≥3 → +1⚡. Its ability is <b>activated</b> (⚙): from next round you can pay 1⚡ for +2\u{1F4AA}, once.`},
+  {do:{t:'place', card:'Starfall', p:1, s:2}, t:`<b>Starfall</b> in the <b>last slot</b> — Any card → +1⚡. When it’s revealed it <b>creates</b> a Stardust token in your hand.`},
+  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Aqitan'}, t:`Flip <b>Aqitan</b>.`},
+  {do:{t:'flip', card:'Starfall'}, t:`Flip <b>Starfall</b> — a Stardust lands in your hand.`},
+  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
+
+  {info:true, at:{r:4}, t:`<b>9⚡.</b> Ember Ridge is empty — let’s take it with three cards. And notice the Rival’s <b>Stardust</b> on Silt Hollow: it has paid them +1⚡ every round.`},
+  {do:{t:'place', card:'Lightspark', p:2, s:1}, t:`<b>Lightspark</b> (3⚡, 5\u{1F4AA}) on Ember Ridge’s <b>middle slot</b> — \u{1F4AA}≥5 → +1⚡. It gives the <b>next card you play</b> +2\u{1F4AA}.`},
+  {do:{t:'place', card:'Sahel', p:2, s:0}, t:`<b>Sahel</b> (4⚡, 7\u{1F4AA}) in the <b>first slot</b> — ⚡≥4 → +2⚡. Sahel <b>moves</b> a card from another planet to here.`},
+  {do:{t:'place', card:'Ambrosia', p:2, s:2}, t:`<b>Ambrosia</b> (2⚡, 1\u{1F4AA}) in the <b>last slot</b> — \u{1F4AA}≤2 → +1⚡. It gives your other cards here +2\u{1F4AA}.`},
+  {do:{t:'lock'}, t:`Exactly 9⚡. Tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Lightspark'}, t:`Order matters now. Flip <b>Lightspark</b> first, so its +2\u{1F4AA} waits for the next card you flip.`},
+  {do:{t:'flip', card:'Sahel'}, t:`Flip <b>Sahel</b>: it picks up Lightspark’s +2\u{1F4AA}…`},
+  {do:{t:'pick', card:'Stardust'}, t:`…and moves an enemy card here. Choose the Rival’s <b>Stardust</b> on Silt Hollow: off that slot, it can’t earn them Energy any more.`},
+  {do:{t:'flip', card:'Ambrosia'}, t:`Flip <b>Ambrosia</b>: +2\u{1F4AA} to Sahel and Lightspark. Bonus Power stays on a card wherever it goes.`},
+  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
+
+  {info:true, at:{r:5}, t:`No Energy for the Rival from Stardust this time. Their <b>Dexter</b> on Ashen Gate has exactly 5\u{1F4AA} — just enough for \u{1F4AA}≥5 → +1⚡. Let’s fix that. You have <b>12⚡</b>.`},
+  {do:{t:'place', card:'Torch', p:3, s:0}, t:`<b>Torch</b> (2⚡) on Ashen Gate’s <b>first slot</b> — ⚡≤2 → +1⚡. It <b>burns</b> 2\u{1F4AA} off an enemy card here.`},
+  {do:{t:'place', card:'Amulet of Cochrane', p:3, s:1}, t:`<b>Amulet of Cochrane</b> (5⚡) in the <b>middle slot</b> — ⚡≥5 → +2⚡. It <b>summons</b> the strongest card in the graveyard.`},
+  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Torch'}, t:`Flip <b>Torch</b>: Dexter drops to 3\u{1F4AA} and won’t meet its condition next round.`},
+  {do:{t:'flip', card:'Amulet of Cochrane'}, t:`Flip the <b>Amulet</b>…`},
+  {do:{t:'slot', p:3, s:2}, t:`…and <b>Battleaxe</b> comes back from the graveyard. Summon it into your <b>last slot on Ashen Gate</b>. A summoned card arrives face up and costs nothing.`},
+  {do:{t:'activate', card:'Aqitan'}, t:`You still have Energy. Tap <b>Aqitan</b> on Silt Hollow to use its ability: 1⚡ for +2\u{1F4AA}.`},
+  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
+
+  {info:true, at:{r:6}, t:`<b>Final round.</b> Dexter failed \u{1F4AA}≥5, so Ashen Gate paid the Rival nothing — but your three cards there all paid you.`},
+  {do:{t:'place', card:'Stardust', p:0, s:2}, t:`Play your <b>Stardust</b> on Verdant Shelf’s <b>last slot</b>. At the end every point of Power counts.`},
+  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
+  {do:{t:'flip', card:'Stardust'}, t:`Flip <b>Stardust</b>.`},
+  {do:{t:'end'}, t:`Tap <b>End turn</b>. Then the Rival reveals and the planets are counted.`}
+];
+const tutStep = () => TUT.active && G && G.tutorial ? TUTOR_STEPS[TUT.step] || null : null;
+const tutNamed = (name, where) => {
+  const me = G.players[0];
+  if(where!=='board'){ const h = me.hand.find(c=>c.name===name); if(h) return h.uid; }
+  for(const pl of G.planets){ const c = pl.board[0].find(c=>c && c.name===name); if(c) return c.uid; }
+  return null;
+};
+/** Does the open step allow this command? Info steps allow nothing. */
+function tutAllows(cmd){
+  const st = tutStep();
+  if(!st) return true;
+  if(st.info) return false;
+  const d = st.do;
+  switch(d.t){
+    case 'place':    return cmd.t==='place' && cmd.uid===tutNamed(d.card, 'hand') && cmd.p===d.p && cmd.s===d.s;
+    case 'lock':     return cmd.t==='lock';
+    case 'flip':     return cmd.t==='flip' && cmd.uid===tutNamed(d.card, 'board');
+    case 'end':      return cmd.t==='endReveal' && !cmd.early;
+    case 'activate': return cmd.t==='activate' && cmd.uid===tutNamed(d.card, 'board');
+    case 'discard':  return cmd.t==='choose' && G.choice && G.choice.kind==='discard' && (G.players[0].hand.find(c=>c.uid===cmd.uid)||{}).name===d.card;
+    case 'pick':     return cmd.t==='choose' && G.choice && G.choice.kind==='pickcard' && ((G.choice.pool.find(o=>o.card.uid===cmd.uid)||{}).card||{}).name===d.card;
+    case 'slot':     { const o = G.choice && G.choice.kind==='pickslot' && G.choice.options[cmd.i]; return cmd.t==='choose' && !!o && o[0]===d.p && o[1]===d.s; }
+  }
+  return false;
+}
+/** The board's highlight: the card to use and the slot to use it on. */
+function tutTarget(){
+  const st = tutStep();
+  if(!st || st.info) return null;
+  const d = st.do, out = {};
+  if(d.card) out.uid = d.t==='place' || d.t==='discard' ? tutNamed(d.card, 'hand') : d.t==='pick'
+    ? (((G.choice && G.choice.pool || []).find(o=>o.card.name===d.card)||{}).card||{}).uid : tutNamed(d.card, 'board');
+  if(d.p!=null) out.sp = d.p+':0:'+d.s;
+  if(d.t==='lock') out.sel = '[data-act="endturn"]';
+  if(d.t==='end') out.sel = '[data-act="endreveal"]';
+  return out;
+}
+function tutMark(){
+  document.querySelectorAll('.tut-glow').forEach(el=>el.classList.remove('tut-glow'));
+  const t = tutTarget();
+  if(!t || UI.dice || UI.roundScreen || UI.intro) return;
+  if(t.uid) document.querySelectorAll(`[data-uid="${t.uid}"]`).forEach(el=>el.classList.add('tut-glow'));
+  if(t.sp) document.querySelectorAll(`[data-sp="${t.sp}"]`).forEach(el=>el.classList.add('tut-glow'));
+  if(t.sel) document.querySelectorAll(t.sel).forEach(el=>el.classList.add('tut-glow'));
+  if(t.uid && !TUT.scrolled[TUT.step]){
+    const el = document.querySelector(`.slot [data-uid="${t.uid}"], .slot[data-sp="${t.sp||''}"]`) || (t.sp && document.querySelector(`[data-sp="${t.sp}"]`));
+    if(el && el.scrollIntoView){ TUT.scrolled[TUT.step] = true; try{ el.scrollIntoView({block:'nearest', inline:'center', behavior:'smooth'}); }catch(e){} }
+  }
+}
+function tutCoachHTML(){
+  if(!G || !G.tutorial || !TUT.active) return '';
+  if(UI.dice || UI.roundScreen || UI.intro || UI.transition) return '';
+  if(G.over) return '';
+  const st = tutStep();
+  const atOk = st && st.info ? (G.round===st.at.r && G.phase==='placement' && !busy()) : true;
+  const mine = G.phase==='placement' ? placingSeats().includes(0) : revealerSeat()===0;
+  let body;
+  if(!st) body = `Watch the reveal…`;
+  else if(st.info && !atOk) body = mine ? `…` : `Your Rival is ${G.phase==='placement'?'placing cards face down':'revealing'}…`;
+  else if(st.info) body = `${st.t}<div class="tut-next"><button class="btn sm primary" data-act="tutnext">Next</button></div>`;
+  else if(!mine && !G.choice) body = `Your Rival is ${G.phase==='placement'?'placing cards face down':'revealing'}…`;
+  else body = st.t;
+  const n = TUTOR_STEPS.length;
+  if(TUT.min) return `<button class="tut-coach min" data-act="tutmin" aria-label="Show the coach">\u{1F393} Coach · ${Math.min(TUT.step+1,n)}/${n}</button>`;
+  return `<div class="tut-coach" role="status" aria-live="polite">
+    <div class="tut-head"><span>\u{1F393} Coach</span><span class="tut-prog"><i style="width:${Math.round(100*TUT.step/n)}%"></i></span>
+      <button class="tut-x" data-act="tutmin" aria-label="Hide the coach">–</button></div>
+    <div class="tut-body">${body}</div>
+  </div>`;
+}
+function tutNudge(){
+  const st = tutStep();
+  if(!st) return;
+  if(st.info){ toast('Read the coach, then tap Next.'); return; }
+  toast('Not yet — follow the coach for this one.');
+  TUT.min = false; render();
+}
+
+/* --- the rules, a page at a time --------------------------------------- */
+const tutCard = (id, extra) => { const def = TUTOR_LIB.cards.find(c=>c.id===id); return `<div class="tut-card ${extra||''}" aria-hidden="true">${cardHTML(previewInstance(def,0), false, false)}</div>`; };
+const tutRule = (cond, rew, cls) => `<span class="tut-rule ${cls||''}"><span class="cond">${condShort(cond)}</span><span class="rew">${rewText(rew)}</span></span>`;
+const TUTOR_PAGES = [
+  {h:'How to win', b:()=>`
+    <div class="tut-hero" aria-hidden="true"><span class="tut-orb" style="--o:#4fd6b0"></span><span class="tut-orb" style="--o:#f5b95c"></span><span class="tut-orb" style="--o:#a482f0"></span><span class="tut-orb" style="--o:#5cbfe4"></span><span class="tut-orb" style="--o:#f2856c"></span></div>
+    <p>Territory is played over <b>six rounds</b> on a row of <b>planets</b> — five for two players.</p>
+    <p>You play cards onto planets. When the sixth round ends, each planet goes to whoever has the <b>most \u{1F4AA} Power</b> there (all their cards added up). A tie on a planet means nobody gets it.</p>
+    <p>The player who wins <b>the most planets wins the game</b>. If that’s tied, the most cards left in hand wins; then the most ⚡ Energy left over.</p>`},
+  {h:'Cards', b:()=>`
+    <div class="tut-anat">${tutCard('t-ward')}
+      <ul class="tut-callouts">
+        <li><b class="c-e">⚡ Energy</b> — top left: what it costs to play.</li>
+        <li><b class="c-p">\u{1F4AA} Power</b> — top right: what it adds to its planet.</li>
+        <li><b>Name and picture</b></li>
+        <li><b>Ability</b> — what it does when it’s turned over.</li>
+      </ul></div>
+    <p>Every round you <b>draw a card</b>. You start with five in hand.</p>`},
+  {h:'Planets and card slots', b:()=>`
+    <div class="tut-planet" aria-hidden="true">
+      <div class="tp-name"><span class="tut-orb sm" style="--o:#4fd6b0"></span> Verdant Shelf</div>
+      <div class="tp-row"><span class="tp-slot"></span><span class="tp-slot"></span><span class="tp-slot"></span></div>
+      <div class="tp-row rules">${tutRule({stat:'cost',op:'<=',val:2},{type:'energy',amount:2})}${tutRule({stat:'power',op:'>=',val:5},{type:'energy',amount:1})}${tutRule({stat:'power',op:'>=',val:6},{type:'draw',amount:1})}</div>
+      <div class="tp-row"><span class="tp-slot mine"></span><span class="tp-slot mine"></span><span class="tp-slot mine"></span></div>
+      <div class="tp-legend"><span>Rival’s slots above</span><span>yours below</span></div>
+    </div>
+    <p>Each planet has <b>three card slots for every player</b>, one card per slot. Your slots and your opponent’s are identical.</p>
+    <p>Each slot has a <b>Condition</b> and a <b>Reward</b>. You may play <b>any card into any open slot</b> — the condition only decides whether the slot pays you.</p>`},
+  {h:'Energy and Power', b:()=>`
+    <div class="tut-two"><div class="tut-big e">⚡</div><div><p><b>Energy</b> pays for cards. You gain <b>2⚡ every round</b>, plus whatever your slots pay out. Energy you don’t spend carries over.</p></div></div>
+    <div class="tut-two"><div class="tut-big p">\u{1F4AA}</div><div><p><b>Power</b> wins planets. Abilities can add bonus Power to a card (it travels with the card) or burn it away. A card that is destroyed or recalled loses its bonus.</p></div></div>
+    <p>In slots, \u{1F0CF} means a card: <b>+1\u{1F0CF}</b> draws you one.</p>`},
+  {h:'Satisfying a condition', b:()=>`
+    <div class="tut-cond">${tutRule({stat:'cost',op:'<=',val:2},{type:'energy',amount:2},'big')}
+      <div class="tut-vs">${tutCard('t-blade','ok')}<span class="tut-arrow">✓ Blade costs 2 — it pays +2⚡</span></div>
+      <div class="tut-vs">${tutCard('t-battleaxe','no')}<span class="tut-arrow">✕ Battleaxe costs 4 — it still adds 8\u{1F4AA}, but pays nothing</span></div></div>
+    <p>At the <b>start of every round</b>, each card already in a slot is checked against that slot’s condition. If it’s true, you get the reward — every round, for as long as it stays true. In round 1 there’s nothing to check yet.</p>
+    <p>A slot that paid this round is outlined in <b style="color:var(--ui-accent)">green</b>.</p>`},
+  {h:'A round: Placement, then Reveal', b:()=>`
+    <ol class="tut-steps">
+      <li><b>Placement.</b> Everyone draws 1 and gains 2⚡; slots that meet their condition pay out. A random player goes first; then play goes round the table.</li>
+      <li>On your turn, play cards <b>face down</b> into open slots — as many as you can afford, or none. You must be able to cover their cost, but you <b>don’t pay yet</b>.</li>
+      <li><b>Reveal.</b> The first player turns their cards over <b>in any order</b>. Each one is paid for as it flips, and its ability goes off at once. Then the next player reveals.</li>
+      <li>After the sixth Reveal, the planets are counted.</li>
+    </ol>`},
+  {h:'Abilities', b:()=>`
+    <p>A card’s ability fires when it’s turned over. The words you’ll see:</p>
+    <dl class="tut-verbs">
+      <dt>Give Power</dt><dd>Adds bonus \u{1F4AA} to a card; it moves with the card.</dd>
+      <dt>Discard</dt><dd>A card from a hand goes to the graveyard, face up. You choose which, unless it says otherwise.</dd>
+      <dt>Destroy</dt><dd>A card on a planet goes to the graveyard; its bonus Power is lost.</dd>
+      <dt>Recall</dt><dd>A card on a planet goes back to its owner’s hand; its bonus Power is lost.</dd>
+      <dt>Create</dt><dd>Makes a token card — into a hand, or onto a planet.</dd>
+      <dt>Summon</dt><dd>Puts a card face up on a planet for free and uses its ability. If the slots there are full, nothing happens.</dd>
+      <dt>Move · Burn · Draw</dt><dd>Move a card to another planet, burn Power off it, draw cards.</dd>
+    </dl>
+    <p class="tiny muted">Some abilities are <b>◈ passive</b> (they wait for something to happen) or <b>⚙ activated</b> (you tap the card and pay to use them).</p>`},
+  {h:'Your turn to play', b:()=>`
+    <p>Now a short guided game against a Rival. The coach will walk you through each move — satisfying slots, discarding, summoning, moving and burning cards — and how they add up to a win.</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px">
+      <button class="btn primary" data-act="tutplay">Start the guided game</button>
+    </div>`}
+];
+function viewTutorial(){
+  const i = clamp(TUT.page|0, 0, TUTOR_PAGES.length-1), pg = TUTOR_PAGES[i];
+  const dots = TUTOR_PAGES.map((p,k)=>`<button class="tut-dot ${k===i?'on':''}" data-act="tutpage" data-i="${k}" aria-label="Page ${k+1}: ${esc(p.h)}"></button>`).join('');
+  return `${topbar('Tutorial', `<button class="btn sm ghost" data-act="tutplay">Skip</button>`)}
+  <div class="page stack tutorial-page">
+    <div class="tut-page card-panel" data-ak="tut:${i}">
+      <div class="tut-kicker">${i+1} of ${TUTOR_PAGES.length}</div>
+      <h2>${esc(pg.h)}</h2>
+      ${pg.b()}
+    </div>
+    <div class="tut-nav">
+      <button class="btn" data-act="tutpage" data-i="${i-1}" ${i?'':'disabled'}>Back</button>
+      <div class="tut-dots">${dots}</div>
+      ${i<TUTOR_PAGES.length-1 ? `<button class="btn primary" data-act="tutpage" data-i="${i+1}">Next</button>` : `<button class="btn primary" data-act="tutplay">Play</button>`}
+    </div>
+  </div>`;
+}
+function tutBegin(){
+  TUT.step = 0; TUT.active = true; TUT.min = false; TUT.scrolled = {};
+  startTutorGame();
+  render();
+}
+function tutLeave(to){
+  TUT.active = false;
+  stopTutorGame();
+  UI.screen = to || 'tutorial'; UI.sheet = null; UI.review = false;
+  render();
+}
+function tutResultHTML(){
+  return `<div class="tut-done card-panel">
+    <b>\u{1F393} Tutorial complete</b>
+    <p>You won Silt Hollow, Ember Ridge and Ashen Gate — 3 planets to 1. Ashen Gate came down to Torch and the Amulet: without them it would have been a tie.</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <button class="btn primary" data-act="tutexit" data-v="online">Play a real game</button>
+      <button class="btn" data-act="tutagain">Play the lesson again</button>
+      <button class="btn ghost" data-act="tutexit" data-v="title">Menu</button>
+    </div></div>`;
+}
+
+
 /** Games recorded while signed in go up as soon as they can. */
 async function flushPending(){
   if(!ACCT || AC.flushing || !(PROFILE.pending||[]).length) return;
@@ -8192,7 +9404,9 @@ async function flushPending(){
     const games = PROFILE.games.filter(g=>ids.includes(g.id));
     await acctCall('POST', '/api/account/games', {games});
     PROFILE.pending = (PROFILE.pending||[]).filter(id=>!ids.includes(id));
-    PROFILE.games.forEach((g,i)=>{ if(ids.includes(g.id) && g.log){ g.hasLog = true; if(i >= LOGS_KEPT) delete g.log; } });
+    PROFILE.games.forEach((g,i)=>{ if(!ids.includes(g.id)) return;
+      if(g.log){ g.hasLog = true; if(i >= LOGS_KEPT) delete g.log; }
+      if(g.replay){ g.hasReplay = true; if(i >= LOGS_KEPT) delete g.replay; } });
     AC.status = 'synced';
     saveProfile();
   }catch(e){ AC.status = 'offline'; }
@@ -8207,7 +9421,7 @@ async function fetchLog(id){
   try{
     const r = await acctCall('GET', '/api/account/games/'+encodeURIComponent(id));
     const g = PROFILE.games.find(x=>x.id===id);
-    if(g && r.game){ g.log = r.game.log || null; if(!g.log) g.hasLog = false; saveProfile(); }
+    if(g && r.game){ g.log = r.game.log || null; if(r.game.replay) g.replay = r.game.replay; if(!g.log) g.hasLog = false; saveProfile(); }
   }catch(e){ const g = PROFILE.games.find(x=>x.id===id); if(g) g.hasLog = false; }
   AC.fetching[id] = false;
   if(UI.sheet==='hist') render();

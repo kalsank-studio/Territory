@@ -24,7 +24,7 @@ rooms, is in **[DEPLOY.md](DEPLOY.md)**.
 | `build.js` | `npm run build`: writes `dist/` — `index.html` with the CSS and JS inlined (also a working offline single file), `library.json`, `art/`. |
 | `build-library.js` | Turns a card CSV into `game/library.json` with the studio's own importer. |
 | `wrangler.json`, `package.json` | Cloudflare config and the `build` / `dev` / `deploy` / `test` scripts. |
-| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-accounts.mjs` checks the account API and `test-accounts-ui.py` signs in from two browsers; `test-round4.py` covers the mulligan, unlocking, the top bar, the passive mark and glow, the draw trigger and the Profile; `test-round3.py` covers the Play menu, the round-open screen, optional effects, discards and summoning onto a slot; `test-contrast.py` checks text contrast everywhere. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
+| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-accounts.mjs` checks the account API and `test-accounts-ui.py` signs in from two browsers; `test-round4.py` covers the mulligan, unlocking, the top bar, the passive mark and glow, the draw trigger and the Profile; `test-round3.py` covers the Play menu, the round-open screen, optional effects, discards and summoning onto a slot; `test-contrast.py` checks text contrast everywhere. `test-social.mjs` and `test-social-ui.py` cover friends, invites and comments; `test-tutorial.py` plays the tutorial. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
 | *(older)* | The earlier headless suites (`test-targeting.js`, `test-abilities.js`, `test-flow.js` and the rest) live with the original prototype files, not in this folder. |
 
 ## Layout of `game.js`
@@ -100,7 +100,7 @@ The parts:
   aren't recorded. In a local game with several people, the record is for the seat with
   your name (the first human seat).
 - Games are told apart by `G.gameId`, which isn't part of the rules (left out of
-  `stateDigest`). Full replays later can hang off the same entries.
+  `stateDigest`). Each entry also carries its stats and replay (see *What's new in 0.8*).
 
 ## Choices on the board, optional effects, discards
 
@@ -816,6 +816,53 @@ Section 9 of `game.js`, on top of the relay in `server/worker.js` (see DEPLOY.md
 browser (load `game.js` headless, hold `G`, apply commands) so nobody can peek and
 the host can leave; a guest's own decks travelling with them; accounts and
 matchmaking.
+
+## What's new in 0.8
+
+### Smaller changes
+
+- **Light and dark.** Text fields without a `type` were left unstyled; every field now follows the theme, and `color-scheme` is set per theme so the browser's own controls match. `test/test-contrast.py` measures field values and placeholders as well as text.
+- **Energy pool.** The ⚡ pill at the top left is bigger and glows, so it reads first.
+- **Paid slots.** During Placement, a slot that paid its reward at the start of this round has a green outline (`G.paid`, filled in by `harvest`).
+- **Players bar.** Under the turn bar, every player in turn order with their ⚡ Energy and 🃏 hand size, and a **1st** badge on whoever reveals first this round.
+- **Opening.** Before round 1: everyone's name in their colour, then the planets slide in and the opening hands are dealt (`showIntro`; a tap skips it). Guests see the host's. Off when animations are off.
+- **Planets centred** across and down the space between the bars and the hand.
+- **Card icons.** ⚡ sits inside the cost circle and 💪 inside the Power circle (they stretch into pills); on slots, 🃏 is a card, ⚡ Energy, 💪 Power. The passive (◈) and activated (⚙) marks sit centred between the art and the name.
+- **Sorting and filtering.** Studio → Cards / Tokens and the sandbox's card list sort by name, ⚡ cost or 💪 Power (tap again to reverse) and filter by ability verb, passive and activated (`sortFilterCards`, `cardSortBarHTML`). Within verbs a card needs any ticked one; Passive and Activated each narrow further.
+- **No more flicker** on the round-open screen: an overlay already on screen keeps still when the page redraws (`steadyEntrances`).
+- **A new account starts from the shipped library** (`fetchShippedLibrary` on account creation).
+
+### Exporting games and the Replay page
+
+Every finished game keeps a **replay**: its seed, seats, decks, the library it was played with (cards in the decks and anything they name, every token and planet; big uploaded pictures are left out and borrowed from this device's library by id or name), and every command in order (`G.setup`, `replayBundle`). Same seed plus same commands gives the same game — `test-online-prep.js` already proved that, and the replay check compares the final state.
+
+- **Export game** on the result screen, and on any game in the match history (or a friend's), saves `territory-<date>-<players>.json`: `{format:'territory-game', v:1, summary, log, replay}`.
+- **Title → Replay** loads that file (or picks a game from your history) and plays it again, with every animation, like a slideshow: play / pause, one step, 1× 2× 4×, and **Watch as** any seat. A replay borrows its own library for as long as it runs (nothing is saved while it does) and gives yours back afterwards.
+- Online, the host's final view carries the replay to every guest, so everyone's history has it. On the server a replay is kept under its own key (`r:<id>`), so loading the history never reads them.
+
+### Stats
+
+Profile → **Stats**, added up from the match history (`gameStats` stores the numbers with each game; games from before 0.8 count only toward planets seen):
+
+- **Cards you played** — play rate (share of your games), game win % (games won when you played it), planet win % (when it ended the game on a planet, how often you won that planet). Sort by any column.
+- **Planets** — how often each came up, how often you won it, and for each of your slots there, how often the card in it met the condition when rewards were checked.
+- **Power** — average gained per round and on the table at the end; most in one round and one game.
+- **Cards drawn** (not the opening hand) — average per game; most in one round and one game.
+
+### Social
+
+Title → **Social** (needs an account):
+
+- **Find players** by username; **Add friend** sends a request; they **Accept** or **Decline** (up to 25 friends; asking someone who already asked you makes you friends at once).
+- Tap a friend (or any player) for their **record and last 30 games**; tap a game for its planets, log, replay and **comments**.
+- **Comments**: anyone signed in can comment on a game, up to 10 per game. The player whose game it is can delete any comment on it, and you can delete your own. Your own games show their comments in your match history.
+- **Invites**: hosting a room, the lobby lists your friends — tap one to invite. They get a pop-up with **Join the game** wherever they are in the app (the game checks every 20 seconds while signed in), and the invite waits in their Social tab for two hours.
+
+The server side is in `server/accounts.js` (`socialRoute`); search uses one more object of the same class, named `~directory`, so there is **no new migration**.
+
+### Tutorial
+
+Title → **Tutorial**. Eight short pages (how to win; cards; planets and slots; Energy and Power; satisfying a condition; a round's two phases; abilities and their verbs; then the game), followed by a **guided game** against a scripted Rival with stacked decks on four planets (`TUTOR_LIB`, `TUTOR_STACKS`, `TUTOR_ENEMY`). The coach asks for one move at a time and the board highlights the card and the slot; any other move is turned away with a nudge (`tutAllows`). Along the way you satisfy ⚡≤2 → +2⚡ with Blade, discard Battleaxe with Ward, draw with Atlas, use Aqitan's activated ability, create Stardust with Starfall, chain Lightspark → Sahel → Ambrosia, pull the Rival's Stardust off the slot that paid them, burn Dexter below its condition with Torch, and bring Battleaxe back with the Amulet of Cochrane. It always ends 3–1 to you; Ashen Gate would be a tie without Torch and the Amulet. The lesson borrows its own library, isn't recorded, and hands yours back when you leave. `test/test-tutorial.py` plays it through by tapping what the coach highlights.
 
 ## Not built
 

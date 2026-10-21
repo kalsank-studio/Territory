@@ -30,8 +30,12 @@ const PASS_MIN = 4, PASS_MAX = 200;
 const ITERATIONS = 10000;
 const SESSIONS_MAX = 20;          // signed in on this many browsers at once
 const GAMES_MAX = 300;            // the oldest drop off after this
-const GAME_BYTES_MAX = 150000;    // one game entry, log included
+const GAME_BYTES_MAX = 400000;    // one game entry, log and replay included
 const NAME_MAX = 24;
+const FRIENDS_MAX = 25;
+const INVITE_MS = 2 * 60 * 60 * 1000;   // an invite to a room lasts two hours
+const PUBLIC_GAMES = 30;                // the games another player can see
+const COMMENTS_PER_GAME = 10, COMMENT_MAX = 280;
 
 const hex = buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
 const randHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
@@ -51,7 +55,7 @@ function sameText(a, b){
 }
 export const cleanUser = u => String(u || '').trim().toLowerCase();
 /** What the history list needs: everything but the log. */
-const summary = g => { const { log, ...rest } = g; return Object.assign(rest, { hasLog: !!(log && log.length) }); };
+const summary = g => { const { log, replay, ...rest } = g; return Object.assign(rest, { hasLog: !!(log && log.length), hasReplay: !!(replay || rest.hasReplay) }); };
 
 export class Account extends DurableObject {
   async register(username, password){
@@ -118,22 +122,150 @@ export class Account extends DurableObject {
       if(JSON.stringify(g).length > GAME_BYTES_MAX) continue;
       const key = 'g:' + g.id;
       if(await this.ctx.storage.get(key)) continue;
-      await this.ctx.storage.put(key, g);
+      /* a replay is kept under its own key, so the history list never reads it */
+      const { replay, ...rest } = g;
+      if(replay){ rest.hasReplay = true; await this.ctx.storage.put('r:' + g.id, replay); }
+      await this.ctx.storage.put(key, rest);
       added++;
     }
     const all = await this.games();
-    if(all.length > GAMES_MAX) await this.ctx.storage.delete(all.slice(GAMES_MAX).map(g => 'g:' + g.id));
+    if(all.length > GAMES_MAX){
+      const old = all.slice(GAMES_MAX);
+      await this.ctx.storage.delete(old.map(g => 'g:' + g.id));
+      await this.ctx.storage.delete(old.map(g => 'r:' + g.id));
+    }
     return { added, total: Math.min(all.length, GAMES_MAX) };
   }
   async game(secret, id){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     const g = await this.ctx.storage.get('g:' + id);
-    return g ? { game: g } : { error: 'No such game.', status: 404 };
+    if(!g) return { error: 'No such game.', status: 404 };
+    const replay = g.hasReplay ? await this.ctx.storage.get('r:' + id) : null;
+    return { game: replay ? Object.assign({}, g, { replay }) : g };
   }
+  /* --- social: this account's friends, requests and invites -------------
+     The Worker route checks who is asking (their own session) and then
+     calls the other account's object directly for its half of a change. */
+  async rel(){
+    const r = (await this.ctx.storage.get('social')) || {};
+    const now = Date.now();
+    return { friends: r.friends || [], incoming: r.incoming || [], outgoing: r.outgoing || [],
+             invites: (r.invites || []).filter(i => now - i.at < INVITE_MS) };
+  }
+  async putRel(r){ await this.ctx.storage.put('social', r); }
+  async exists(){ const u = await this.ctx.storage.get('user'); return u ? u.username : null; }
+  async displayName(){ const prof = (await this.ctx.storage.get('profile')) || {}; const u = await this.ctx.storage.get('user'); return prof.name || (u && u.username) || ''; }
+  async friendCount(){ return (await this.rel()).friends.length; }
+  /** Someone asks to be friends. If this account had already asked them, they become friends. */
+  async relIncoming(from){
+    const r = await this.rel();
+    if(r.friends.includes(from)) return { ok: true, friends: true };
+    if(r.outgoing.some(o => o.user === from)){
+      if(r.friends.length >= FRIENDS_MAX) return { error: 'They already have ' + FRIENDS_MAX + ' friends.', status: 409 };
+      r.outgoing = r.outgoing.filter(o => o.user !== from); r.friends.push(from); await this.putRel(r);
+      return { ok: true, friends: true };
+    }
+    if(r.friends.length >= FRIENDS_MAX) return { error: 'They already have ' + FRIENDS_MAX + ' friends.', status: 409 };
+    if(!r.incoming.some(o => o.user === from)){ r.incoming.unshift({ user: from, at: Date.now() }); r.incoming = r.incoming.slice(0, 50); }
+    await this.putRel(r);
+    return { ok: true };
+  }
+  async relOutgoing(to, friends){
+    const r = await this.rel();
+    r.incoming = r.incoming.filter(o => o.user !== to);
+    if(friends){ r.outgoing = r.outgoing.filter(o => o.user !== to); if(!r.friends.includes(to)) r.friends.push(to); }
+    else if(!r.outgoing.some(o => o.user === to)) r.outgoing.unshift({ user: to, at: Date.now() });
+    await this.putRel(r);
+    return { ok: true };
+  }
+  async relBefriend(u){
+    const r = await this.rel();
+    r.incoming = r.incoming.filter(o => o.user !== u); r.outgoing = r.outgoing.filter(o => o.user !== u);
+    if(!r.friends.includes(u)) r.friends.push(u);
+    await this.putRel(r);
+    return { ok: true };
+  }
+  /** Forget anything between this account and `u`: a request either way, or the friendship. */
+  async relDrop(u){
+    const r = await this.rel();
+    r.incoming = r.incoming.filter(o => o.user !== u); r.outgoing = r.outgoing.filter(o => o.user !== u);
+    r.friends = r.friends.filter(f => f !== u); r.invites = r.invites.filter(i => i.from !== u);
+    await this.putRel(r);
+    return { ok: true };
+  }
+  async relInvite(inv){
+    const r = await this.rel();
+    if(!r.friends.includes(inv.from)) return { error: 'Only friends can invite each other.', status: 403 };
+    r.invites = r.invites.filter(i => i.from !== inv.from);
+    r.invites.unshift(Object.assign({ at: Date.now() }, inv));
+    r.invites = r.invites.slice(0, 10);
+    await this.putRel(r);
+    return { ok: true };
+  }
+  async relDismiss(code){
+    const r = await this.rel();
+    r.invites = r.invites.filter(i => code ? i.code !== code : false);
+    await this.putRel(r);
+    return { ok: true };
+  }
+  async record(){
+    const g = await this.games();
+    const n = k => g.filter(x => x.result === k).length;
+    return { played: g.length, wins: n('win'), losses: n('loss'), draws: n('draw') };
+  }
+  /** What anyone signed in may see: the name, the record and recent games, with comment counts. */
+  async publicProfile(){
+    const username = await this.exists();
+    if(!username) return { error: 'No such player.', status: 404 };
+    const all = await this.games();
+    const recent = all.slice(0, PUBLIC_GAMES).map(summary);
+    const keys = recent.map(g => 'c:' + g.id);
+    const cm = keys.length ? await this.ctx.storage.get(keys) : new Map();
+    recent.forEach(g => { const c = cm.get('c:' + g.id); g.comments = c ? c.length : 0; });
+    const n = k => all.filter(x => x.result === k).length;
+    return { username, name: await this.displayName(),
+             record: { played: all.length, wins: n('win'), losses: n('loss'), draws: n('draw') }, games: recent };
+  }
+  async publicGame(id){
+    const g = await this.ctx.storage.get('g:' + id);
+    if(!g) return { error: 'No such game.', status: 404 };
+    const replay = g.hasReplay ? await this.ctx.storage.get('r:' + id) : null;
+    return { game: replay ? Object.assign({}, g, { replay }) : g, comments: (await this.ctx.storage.get('c:' + id)) || [] };
+  }
+  async addComment(id, author, authorName, text){
+    if(!await this.ctx.storage.get('g:' + id)) return { error: 'No such game.', status: 404 };
+    const clean = String(text || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').trim().slice(0, COMMENT_MAX);
+    if(!clean) return { error: 'Write something first.', status: 400 };
+    const list = (await this.ctx.storage.get('c:' + id)) || [];
+    if(list.length >= COMMENTS_PER_GAME) return { error: 'This game already has ' + COMMENTS_PER_GAME + ' comments.', status: 409 };
+    list.push({ id: randHex(6), author, name: String(authorName || author).slice(0, NAME_MAX), text: clean, at: Date.now() });
+    await this.ctx.storage.put('c:' + id, list);
+    return { ok: true, comments: list };
+  }
+  /** The player whose game it is can delete any comment on it; anyone can delete their own. */
+  async deleteComment(id, cid, by){
+    const owner = await this.exists();
+    const list = (await this.ctx.storage.get('c:' + id)) || [];
+    const c = list.find(x => x.id === cid);
+    if(!c) return { error: 'No such comment.', status: 404 };
+    if(by !== owner && by !== c.author) return { error: 'Only the player whose game it is, or whoever wrote it, can delete a comment.', status: 403 };
+    const next = list.filter(x => x.id !== cid);
+    await this.ctx.storage.put('c:' + id, next);
+    return { ok: true, comments: next };
+  }
+  /* --- the directory: one extra object (named "~directory", which no username
+     can be) that lists every username, for search */
+  async dirPut(user, name){ await this.ctx.storage.put('u:' + user, { name: String(name || user).slice(0, NAME_MAX) }); return { ok: true }; }
+  async dirSearch(q){
+    const out = await this.ctx.storage.list({ prefix: 'u:' + q, limit: 20 });
+    return [...out.entries()].map(([k, v]) => ({ user: k.slice(2), name: v.name }));
+  }
+
   async clearGames(secret){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     const all = await this.ctx.storage.list({ prefix: 'g:' });
-    const keys = [...all.keys()];
+    const reps = await this.ctx.storage.list({ prefix: 'r:' });
+    const keys = [...all.keys(), ...reps.keys()];
     for(let i = 0; i < keys.length; i += 128) await this.ctx.storage.delete(keys.slice(i, i + 128));
     return { ok: true };
   }
@@ -141,7 +273,7 @@ export class Account extends DurableObject {
 
 /** The /api/account routes. Returns a Response, or null if the path isn't one of them. */
 export async function accountRoute(request, env, url, json){
-  if(!url.pathname.startsWith('/api/account')) return null;
+  if(!/^\/api\/(account|social|users)(\/|$)/.test(url.pathname)) return null;
   const stubFor = u => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(u));
   const reply = r => r.error ? json({ error: r.error }, r.status || 400) : json(r, r.token && url.pathname.endsWith('/register') ? 201 : 200);
   const body = async () => { try{ return await request.json(); }catch(e){ return {}; } };
@@ -152,7 +284,9 @@ export async function accountRoute(request, env, url, json){
     const u = cleanUser(b.username);
     if(!USER_RE.test(u)) return json({ error: 'A username is 3–20 letters, numbers, - or _.' }, 400);
     const stub = stubFor(u);
-    return reply(p.endsWith('register') ? await stub.register(u, b.password) : await stub.login(u, b.password));
+    const r = p.endsWith('register') ? await stub.register(u, b.password) : await stub.login(u, b.password);
+    if(r.token) await stubFor(DIRECTORY).dirPut(u, await stub.displayName());    // listed for search
+    return reply(r);
   }
 
   /* everything else needs a session */
@@ -163,11 +297,122 @@ export async function accountRoute(request, env, url, json){
   const stub = stubFor(u);
 
   if(p === '/api/account' && request.method === 'GET') return reply(await stub.profile(secret));
-  if(p === '/api/account' && request.method === 'PUT') return reply(await stub.setName(secret, (await body()).name));
+  if(p === '/api/account' && request.method === 'PUT'){
+    const r = await stub.setName(secret, (await body()).name);
+    if(r.ok) await stubFor(DIRECTORY).dirPut(u, r.name || u);
+    return reply(r);
+  }
   if(p === '/api/account/logout' && request.method === 'POST') return reply(await stub.logout(secret));
   if(p === '/api/account/games' && request.method === 'POST') return reply(await stub.addGames(secret, (await body()).games));
   if(p === '/api/account/games' && request.method === 'DELETE') return reply(await stub.clearGames(secret));
   const gm = p.match(/^\/api\/account\/games\/([A-Za-z0-9]{4,40})$/);
   if(gm && request.method === 'GET') return reply(await stub.game(secret, gm[1]));
+  if(p.startsWith('/api/social') || p.startsWith('/api/users')) return socialRoute(request, env, p, u, secret, stub, stubFor, reply, json, body, url);
+  return json({ error: 'Not found.' }, 404);
+}
+
+const DIRECTORY = '~directory';
+/** Friends, requests, invites, other players' profiles and comments.
+     GET    /api/social                    -> {friends:[{user,name,record}], incoming, outgoing, invites}
+     GET    /api/social/poll               -> {incoming:n, invites:[…]}      (cheap, for polling)
+     POST   /api/social/request  {user}    ask to be friends (or accept, if they asked first)
+     POST   /api/social/accept   {user}
+     POST   /api/social/decline  {user}    turn down, or take back, a request
+     POST   /api/social/remove   {user}    stop being friends
+     POST   /api/social/invite   {user, code}   invite a friend to a room
+     POST   /api/social/dismiss  {code}
+     GET    /api/users?q=ab                -> {users:[{user,name}]}
+     GET    /api/users/:u                  -> {username, name, record, games, relation}
+     GET    /api/users/:u/games/:id        -> {game, comments}
+     POST   /api/users/:u/games/:id/comments          {text}
+     DELETE /api/users/:u/games/:id/comments/:cid */
+async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, json, body, url){
+  if(!await stub.signedIn(secret)) return json({ error: 'Signed out.' }, 401);
+  const method = request.method;
+  const other = async user => {
+    const v = cleanUser(user);
+    if(!USER_RE.test(v)) return null;
+    const s = stubFor(v);
+    return (await s.exists()) ? { user: v, stub: s } : null;
+  };
+
+  if(p === '/api/social' && method === 'GET'){
+    const r = await stub.rel();
+    await stubFor(DIRECTORY).dirPut(me, await stub.displayName());      // accounts made before search existed
+    const friends = await Promise.all(r.friends.map(async f => {
+      const s = stubFor(f);
+      try{ return { user: f, name: await s.displayName(), record: await s.record() }; }catch(e){ return { user: f, name: f, record: null }; }
+    }));
+    const named = list => Promise.all(list.map(async o => Object.assign({}, o, { name: await stubFor(o.user).displayName() })));
+    return json({ friends, incoming: await named(r.incoming), outgoing: await named(r.outgoing), invites: r.invites, max: FRIENDS_MAX });
+  }
+  if(p === '/api/social/poll' && method === 'GET'){
+    const r = await stub.rel();
+    return json({ incoming: r.incoming.length, invites: r.invites });
+  }
+  const sm = p.match(/^\/api\/social\/(request|accept|decline|remove|invite|dismiss)$/);
+  if(sm && method === 'POST'){
+    const b = await body();
+    if(sm[1] === 'dismiss') return reply(await stub.relDismiss(String(b.code || '')));
+    const o = await other(b.user);
+    if(!o) return json({ error: 'No player with that username.' }, 404);
+    if(o.user === me) return json({ error: 'That\u2019s you.' }, 400);
+    const mine = await stub.rel();
+    switch(sm[1]){
+      case 'request': {
+        if(mine.friends.includes(o.user)) return json({ ok: true, friends: true });
+        if(mine.friends.length >= FRIENDS_MAX) return json({ error: 'You already have ' + FRIENDS_MAX + ' friends.' }, 409);
+        if(mine.incoming.some(x => x.user === o.user)){          // they asked first: this is a yes
+          if(mine.friends.length >= FRIENDS_MAX) return json({ error: 'You already have ' + FRIENDS_MAX + ' friends.' }, 409);
+          if(await o.stub.friendCount() >= FRIENDS_MAX) return json({ error: 'They already have ' + FRIENDS_MAX + ' friends.' }, 409);
+          await stub.relBefriend(o.user); await o.stub.relBefriend(me);
+          return json({ ok: true, friends: true });
+        }
+        const r = await o.stub.relIncoming(me);
+        if(r.error) return reply(r);
+        await stub.relOutgoing(o.user, !!r.friends);
+        return json({ ok: true, friends: !!r.friends });
+      }
+      case 'accept': {
+        if(!mine.incoming.some(x => x.user === o.user)) return json({ error: 'There\u2019s no request from them.' }, 404);
+        if(mine.friends.length >= FRIENDS_MAX) return json({ error: 'You already have ' + FRIENDS_MAX + ' friends.' }, 409);
+        if(await o.stub.friendCount() >= FRIENDS_MAX) return json({ error: 'They already have ' + FRIENDS_MAX + ' friends.' }, 409);
+        await stub.relBefriend(o.user); await o.stub.relBefriend(me);
+        return json({ ok: true, friends: true });
+      }
+      case 'decline': case 'remove':
+        await stub.relDrop(o.user); await o.stub.relDrop(me);
+        return json({ ok: true });
+      case 'invite': {
+        if(!mine.friends.includes(o.user)) return json({ error: 'You can only invite friends.' }, 403);
+        const code = String(b.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+        if(!code) return json({ error: 'Which room?' }, 400);
+        return reply(await o.stub.relInvite({ from: me, name: await stub.displayName(), code }));
+      }
+    }
+  }
+
+  if(p === '/api/users' && method === 'GET'){
+    const q = cleanUser(url.searchParams.get('q') || '').replace(/[^a-z0-9_-]/g, '');
+    if(q.length < 1) return json({ users: [] });
+    return json({ users: (await stubFor(DIRECTORY).dirSearch(q)).filter(x => x.user !== me) });
+  }
+  const um = p.match(/^\/api\/users\/([a-z0-9_-]{3,20})(?:\/games\/([A-Za-z0-9]{4,40})(?:\/comments(?:\/([a-f0-9]{6,20}))?)?)?$/i);
+  if(um){
+    const o = await other(um[1]);
+    if(!o) return json({ error: 'No player with that username.' }, 404);
+    if(!um[2] && method === 'GET'){
+      const r = await o.stub.publicProfile();
+      if(r.error) return reply(r);
+      const mine = await stub.rel();
+      r.relation = o.user === me ? 'self' : mine.friends.includes(o.user) ? 'friend'
+        : mine.outgoing.some(x => x.user === o.user) ? 'asked' : mine.incoming.some(x => x.user === o.user) ? 'asking' : 'none';
+      return json(r);
+    }
+    if(um[2] && !p.includes('/comments') && method === 'GET') return reply(await o.stub.publicGame(um[2]));
+    if(um[2] && p.endsWith('/comments') && method === 'POST')
+      return reply(await o.stub.addComment(um[2], me, await stub.displayName(), (await body()).text));
+    if(um[3] && method === 'DELETE') return reply(await o.stub.deleteComment(um[2], um[3], me));
+  }
   return json({ error: 'Not found.' }, 404);
 }

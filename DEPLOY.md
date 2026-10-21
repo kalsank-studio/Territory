@@ -116,7 +116,18 @@ the games and saves them when it's back.
 | `GET /api/account/games/<id>` | one game with its log |
 | `DELETE /api/account/games` · `POST /api/account/logout` | clear the history · sign this browser out |
 
+| `GET /api/social` · `/api/social/poll` | friends (with records), requests both ways, invites · just the request count and invites |
+| `POST /api/social/request` · `accept` · `decline` · `remove` | `{user}` — friend requests (25 friends at most) |
+| `POST /api/social/invite` · `dismiss` | `{user, code}` — invite a friend to a room · `{code}` — clear an invite |
+| `GET /api/users?q=` · `/api/users/<u>` | search usernames · a player's name, record and last 30 games |
+| `GET /api/users/<u>/games/<id>` | one game with its log, replay and comments |
+| `POST` · `DELETE /api/users/<u>/games/<id>/comments[/<cid>]` | `{text}` — add a comment (10 per game) · delete one (the game's owner, or whoever wrote it) |
+
 Everything except register and login sends `Authorization: Bearer <token>`.
+`node test/test-social.mjs` (or with `BASE=…`) checks the social routes.
+
+**Updating to 0.8:** upload `server/accounts.js` with the rest. There is no new Durable Object class or migration —
+player search uses one more object of the `Account` class.
 `BASE=https://territory.<your-name>.workers.dev node test/test-accounts.mjs` checks a deployed copy (it makes
 a throwaway account each run).
 

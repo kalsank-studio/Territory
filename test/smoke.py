@@ -14,7 +14,8 @@ with sync_playwright() as p:
                    LIB.settings.deckOf=['d3','d3','d3','d3']; LIB.settings.sandbox=false; LIB.settings.turnTimer=0; UI.screen='setup'; render();""")
     pg.wait_for_timeout(200); pg.screenshot(path='shots/1-setup-simul.png', full_page=True)
     pg.click('[data-act="begin"]')
-    pg.wait_for_timeout(4500)          # dice, then the bot places and locks in
+    pg.wait_for_function("G && !busy() && G.players[1].locked", timeout=20000)   # the opening, dice, then the bot places and locks in
+    pg.wait_for_timeout(300)
     pg.screenshot(path='shots/2-simul-placing.png')
     st = pg.evaluate("({simul:G.simul, phase:G.phase, botLocked:G.players[1].locked, backs:document.querySelectorAll('.planet .side:not(.mine) .mini.back').length, chips:document.querySelectorAll('.lockchip').length})")
     print('simul game', st)
@@ -36,7 +37,7 @@ with sync_playwright() as p:
     # hot-seat: two humans take turns behind the hand-over screen
     pg.evaluate("""LIB.settings.kinds=['human','human','bot','bot']; LIB.settings.hide=true; UI.screen='setup'; render();""")
     pg.wait_for_timeout(200); pg.screenshot(path='shots/6-setup-hotseat.png', full_page=True)
-    pg.click('[data-act="begin"]'); pg.wait_for_timeout(2600)
+    pg.click('[data-act="begin"]'); pg.wait_for_function("G && !UI.intro && !UI.dice", timeout=20000); pg.wait_for_timeout(300)
     st = pg.evaluate("({simul:G.simul, gate:UI.gate, veil:!!document.querySelector('.veil')})")
     print('hot-seat', st)
     pg.screenshot(path='shots/7-hotseat-veil.png')
