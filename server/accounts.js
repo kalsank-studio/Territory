@@ -54,6 +54,49 @@ function sameText(a, b){
   return d === 0;
 }
 export const cleanUser = u => String(u || '').trim().toLowerCase();
+/** A profile emoji: a few characters at most, no letters or digits (so it can't be a name in disguise). */
+const cleanEmoji = e => { const v = String(e || '').replace(/[\u0000-\u001f\s]/g, '').slice(0, 16); return /[A-Za-z0-9<>]/.test(v) ? '' : v; };
+
+/* --- adding games up (the same arithmetic as the game's own Stats page) --- */
+const freshStats = () => ({ v: 1, games: 0, withStats: 0, cards: {}, planets: {},
+  power: { rounds: 0, roundSum: 0, gameSum: 0, bestRound: null, bestGame: null },
+  draws: { gameSum: 0, bestRound: null, bestGame: null } });
+function mergeGame(S, g, user){
+  const st = g.stats; if(!st || !st.v) return;
+  S.games++; S.withStats++;
+  const who = { user, at: g.at || Date.now() };
+  (g.rows || []).forEach(r => { const p = S.planets[r.name] || (S.planets[r.name] = { name: r.name, seen: 0, won: 0, rounds: 0, slots: {} }); p.seen++; if(r.winner === g.seat) p.won++; });
+  const seen = new Set();
+  (st.cards || []).forEach(c => {
+    const k = S.cards[c.n] || (S.cards[c.n] = { name: c.n, plays: 0, games: 0, gameWins: 0, onBoard: 0, planetWins: 0 });
+    k.plays++;
+    if(!seen.has(c.n)){ seen.add(c.n); k.games++; if(st.won) k.gameWins++; }
+    if(c.pw != null){ k.onBoard++; if(c.pw) k.planetWins++; }
+  });
+  (st.slots || []).forEach(pl => {
+    const p = S.planets[pl.p] || (S.planets[pl.p] = { name: pl.p, seen: 0, won: 0, rounds: 0, slots: {} });
+    p.rounds += g.rounds || 6;
+    pl.s.forEach((sl, i) => { const key = i + '|' + sl.c + '|' + sl.r; const row = p.slots[key] || (p.slots[key] = { i, c: sl.c, r: sl.r, m: 0, rounds: 0 }); row.m += sl.m; row.rounds += g.rounds || 6; });
+  });
+  const pw = st.power || [];
+  pw.forEach((v, i) => { const gain = v - (i ? pw[i - 1] : 0); S.power.rounds++; S.power.roundSum += gain;
+    if(!S.power.bestRound || gain > S.power.bestRound.v) S.power.bestRound = Object.assign({ v: gain, rd: i + 1 }, who); });
+  const fin = pw.length ? pw[pw.length - 1] : 0;
+  S.power.gameSum += fin;
+  if(!S.power.bestGame || fin > S.power.bestGame.v) S.power.bestGame = Object.assign({ v: fin }, who);
+  const dr = st.draws || [], total = dr.reduce((a, b) => a + b, 0);
+  S.draws.gameSum += total;
+  if(!S.draws.bestGame || total > S.draws.bestGame.v) S.draws.bestGame = Object.assign({ v: total }, who);
+  dr.forEach((v, i) => { if(!S.draws.bestRound || v > S.draws.bestRound.v) S.draws.bestRound = Object.assign({ v, rd: i + 1 }, who); });
+}
+/** The shape the game's Stats page draws. */
+function publicStats(S){
+  const n = S.withStats;
+  return { n, total: S.games, cards: Object.values(S.cards),
+    planets: Object.values(S.planets).map(p => ({ name: p.name, seen: p.seen, won: p.won, rounds: p.rounds, slots: Object.values(p.slots) })),
+    power: { perRound: S.power.rounds ? S.power.roundSum / S.power.rounds : null, perGame: n ? S.power.gameSum / n : null, bestRound: S.power.bestRound, bestGame: S.power.bestGame },
+    draws: { perGame: n ? S.draws.gameSum / n : null, bestRound: S.draws.bestRound, bestGame: S.draws.bestGame } };
+}
 /** What the history list needs: everything but the log. */
 const summary = g => { const { log, replay, ...rest } = g; return Object.assign(rest, { hasLog: !!(log && log.length), hasReplay: !!(replay || rest.hasReplay) }); };
 
@@ -102,21 +145,24 @@ export class Account extends DurableObject {
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     const user = await this.ctx.storage.get('user');
     const prof = (await this.ctx.storage.get('profile')) || {};
-    return { username: user.username, name: prof.name || user.username, games: (await this.games()).map(summary) };
+    return { username: user.username, name: prof.name || user.username, emoji: prof.emoji || '', games: (await this.games()).map(summary) };
   }
-  async setName(secret, name){
+  /** Change the display name and/or the profile emoji (either may be left out). */
+  async setName(secret, name, emoji){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
-    const clean = String(name || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, NAME_MAX);
     const prof = (await this.ctx.storage.get('profile')) || {};
-    prof.name = clean;
+    if(name != null) prof.name = String(name || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, NAME_MAX);
+    if(emoji != null) prof.emoji = cleanEmoji(emoji);
     await this.ctx.storage.put('profile', prof);
-    return { ok: true, name: clean };
+    const user = await this.ctx.storage.get('user');
+    return { ok: true, name: prof.name || user.username, emoji: prof.emoji || '' };
   }
   /** Add finished games. One already there (same id) is left as it is. */
   async addGames(secret, list){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     if(!Array.isArray(list)) return { error: 'Send {games:[…]}.', status: 400 };
     let added = 0;
+    const fresh = [];
     for(const g of list.slice(0, 250)){
       if(!g || typeof g.id !== 'string' || !/^[a-z0-9]{4,40}$/i.test(g.id)) continue;
       if(JSON.stringify(g).length > GAME_BYTES_MAX) continue;
@@ -127,6 +173,7 @@ export class Account extends DurableObject {
       if(replay){ rest.hasReplay = true; await this.ctx.storage.put('r:' + g.id, replay); }
       await this.ctx.storage.put(key, rest);
       added++;
+      if(rest.stats && rest.stats.v && rest.mode !== 'sandbox') fresh.push(rest);
     }
     const all = await this.games();
     if(all.length > GAMES_MAX){
@@ -134,7 +181,7 @@ export class Account extends DurableObject {
       await this.ctx.storage.delete(old.map(g => 'g:' + g.id));
       await this.ctx.storage.delete(old.map(g => 'r:' + g.id));
     }
-    return { added, total: Math.min(all.length, GAMES_MAX) };
+    return { added, total: Math.min(all.length, GAMES_MAX), fresh };
   }
   async game(secret, id){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
@@ -154,6 +201,8 @@ export class Account extends DurableObject {
   }
   async putRel(r){ await this.ctx.storage.put('social', r); }
   async exists(){ const u = await this.ctx.storage.get('user'); return u ? u.username : null; }
+  async displayEmoji(){ const prof = (await this.ctx.storage.get('profile')) || {}; return prof.emoji || ''; }
+  async card(){ const u = await this.ctx.storage.get('user'); if(!u) return null; const prof = (await this.ctx.storage.get('profile')) || {}; return { user: u.username, name: prof.name || u.username, emoji: prof.emoji || '' }; }
   async displayName(){ const prof = (await this.ctx.storage.get('profile')) || {}; const u = await this.ctx.storage.get('user'); return prof.name || (u && u.username) || ''; }
   async friendCount(){ return (await this.rel()).friends.length; }
   /** Someone asks to be friends. If this account had already asked them, they become friends. */
@@ -223,7 +272,7 @@ export class Account extends DurableObject {
     const cm = keys.length ? await this.ctx.storage.get(keys) : new Map();
     recent.forEach(g => { const c = cm.get('c:' + g.id); g.comments = c ? c.length : 0; });
     const n = k => all.filter(x => x.result === k).length;
-    return { username, name: await this.displayName(),
+    return { username, name: await this.displayName(), emoji: await this.displayEmoji(),
              record: { played: all.length, wins: n('win'), losses: n('loss'), draws: n('draw') }, games: recent };
   }
   async publicGame(id){
@@ -255,11 +304,20 @@ export class Account extends DurableObject {
   }
   /* --- the directory: one extra object (named "~directory", which no username
      can be) that lists every username, for search */
-  async dirPut(user, name){ await this.ctx.storage.put('u:' + user, { name: String(name || user).slice(0, NAME_MAX) }); return { ok: true }; }
+  async dirPut(user, name, emoji){ await this.ctx.storage.put('u:' + user, { name: String(name || user).slice(0, NAME_MAX), emoji: emoji || '' }); return { ok: true }; }
   async dirSearch(q){
     const out = await this.ctx.storage.list({ prefix: 'u:' + q, limit: 20 });
-    return [...out.entries()].map(([k, v]) => ({ user: k.slice(2), name: v.name }));
+    return [...out.entries()].map(([k, v]) => ({ user: k.slice(2), name: v.name, emoji: v.emoji || '' }));
   }
+  /* --- everyone's stats: one more object ("~stats") adds up every game any
+     account records, the same way each player's own Stats page does. */
+  async statsMerge(games, user){
+    const S = (await this.ctx.storage.get('stats')) || freshStats();
+    games.forEach(g => mergeGame(S, g, user));
+    await this.ctx.storage.put('stats', S);
+    return { ok: true };
+  }
+  async statsGet(){ return publicStats((await this.ctx.storage.get('stats')) || freshStats()); }
 
   async clearGames(secret){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
@@ -273,7 +331,7 @@ export class Account extends DurableObject {
 
 /** The /api/account routes. Returns a Response, or null if the path isn't one of them. */
 export async function accountRoute(request, env, url, json){
-  if(!/^\/api\/(account|social|users)(\/|$)/.test(url.pathname)) return null;
+  if(!/^\/api\/(account|social|users|stats)(\/|$)/.test(url.pathname)) return null;
   const stubFor = u => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(u));
   const reply = r => r.error ? json({ error: r.error }, r.status || 400) : json(r, r.token && url.pathname.endsWith('/register') ? 201 : 200);
   const body = async () => { try{ return await request.json(); }catch(e){ return {}; } };
@@ -285,9 +343,11 @@ export async function accountRoute(request, env, url, json){
     if(!USER_RE.test(u)) return json({ error: 'A username is 3–20 letters, numbers, - or _.' }, 400);
     const stub = stubFor(u);
     const r = p.endsWith('register') ? await stub.register(u, b.password) : await stub.login(u, b.password);
-    if(r.token) await stubFor(DIRECTORY).dirPut(u, await stub.displayName());    // listed for search
+    if(r.token) await stubFor(DIRECTORY).dirPut(u, await stub.displayName(), await stub.displayEmoji());    // listed for search
     return reply(r);
   }
+
+  if(p === '/api/stats' && request.method === 'GET') return json(await stubFor(STATS).statsGet());
 
   /* everything else needs a session */
   const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -296,14 +356,24 @@ export async function accountRoute(request, env, url, json){
   if(dot < 1 || !USER_RE.test(u) || !secret) return json({ error: 'Sign in first.' }, 401);
   const stub = stubFor(u);
 
-  if(p === '/api/account' && request.method === 'GET') return reply(await stub.profile(secret));
+  if(p === '/api/account' && request.method === 'GET'){
+    const r = await stub.profile(secret);
+    if(!r.error) await stubFor(DIRECTORY).dirPut(u, r.name, r.emoji);   // every account that opens the game is findable
+    return reply(r);
+  }
   if(p === '/api/account' && request.method === 'PUT'){
-    const r = await stub.setName(secret, (await body()).name);
-    if(r.ok) await stubFor(DIRECTORY).dirPut(u, r.name || u);
+    const b = await body();
+    const r = await stub.setName(secret, b.name, b.emoji);
+    if(r.ok) await stubFor(DIRECTORY).dirPut(u, r.name || u, r.emoji);
     return reply(r);
   }
   if(p === '/api/account/logout' && request.method === 'POST') return reply(await stub.logout(secret));
-  if(p === '/api/account/games' && request.method === 'POST') return reply(await stub.addGames(secret, (await body()).games));
+  if(p === '/api/account/games' && request.method === 'POST'){
+    const r = await stub.addGames(secret, (await body()).games);
+    if(r.fresh && r.fresh.length){ try{ await stubFor(STATS).statsMerge(r.fresh, u); }catch(e){} }
+    delete r.fresh;
+    return reply(r);
+  }
   if(p === '/api/account/games' && request.method === 'DELETE') return reply(await stub.clearGames(secret));
   const gm = p.match(/^\/api\/account\/games\/([A-Za-z0-9]{4,40})$/);
   if(gm && request.method === 'GET') return reply(await stub.game(secret, gm[1]));
@@ -311,7 +381,7 @@ export async function accountRoute(request, env, url, json){
   return json({ error: 'Not found.' }, 404);
 }
 
-const DIRECTORY = '~directory';
+const DIRECTORY = '~directory', STATS = '~stats';
 /** Friends, requests, invites, other players' profiles and comments.
      GET    /api/social                    -> {friends:[{user,name,record}], incoming, outgoing, invites}
      GET    /api/social/poll               -> {incoming:n, invites:[…]}      (cheap, for polling)
@@ -338,12 +408,12 @@ async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, js
 
   if(p === '/api/social' && method === 'GET'){
     const r = await stub.rel();
-    await stubFor(DIRECTORY).dirPut(me, await stub.displayName());      // accounts made before search existed
+    await stubFor(DIRECTORY).dirPut(me, await stub.displayName(), await stub.displayEmoji());      // accounts made before search existed
     const friends = await Promise.all(r.friends.map(async f => {
       const s = stubFor(f);
-      try{ return { user: f, name: await s.displayName(), record: await s.record() }; }catch(e){ return { user: f, name: f, record: null }; }
+      try{ return { user: f, name: await s.displayName(), emoji: await s.displayEmoji(), record: await s.record() }; }catch(e){ return { user: f, name: f, record: null }; }
     }));
-    const named = list => Promise.all(list.map(async o => Object.assign({}, o, { name: await stubFor(o.user).displayName() })));
+    const named = list => Promise.all(list.map(async o => { const s = stubFor(o.user); return Object.assign({}, o, { name: await s.displayName(), emoji: await s.displayEmoji() }); }));
     return json({ friends, incoming: await named(r.incoming), outgoing: await named(r.outgoing), invites: r.invites, max: FRIENDS_MAX });
   }
   if(p === '/api/social/poll' && method === 'GET'){
@@ -387,7 +457,7 @@ async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, js
         if(!mine.friends.includes(o.user)) return json({ error: 'You can only invite friends.' }, 403);
         const code = String(b.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
         if(!code) return json({ error: 'Which room?' }, 400);
-        return reply(await o.stub.relInvite({ from: me, name: await stub.displayName(), code }));
+        return reply(await o.stub.relInvite({ from: me, name: await stub.displayName(), emoji: await stub.displayEmoji(), code }));
       }
     }
   }
@@ -395,7 +465,13 @@ async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, js
   if(p === '/api/users' && method === 'GET'){
     const q = cleanUser(url.searchParams.get('q') || '').replace(/[^a-z0-9_-]/g, '');
     if(q.length < 1) return json({ users: [] });
-    return json({ users: (await stubFor(DIRECTORY).dirSearch(q)).filter(x => x.user !== me) });
+    const users = (await stubFor(DIRECTORY).dirSearch(q)).filter(x => x.user !== me);
+    /* an account nobody has opened since search arrived isn't listed yet: an exact username still finds it */
+    if(USER_RE.test(q) && q !== me && !users.some(x => x.user === q)){
+      const card = await stubFor(q).card();
+      if(card){ users.unshift(card); await stubFor(DIRECTORY).dirPut(card.user, card.name, card.emoji); }
+    }
+    return json({ users });
   }
   const um = p.match(/^\/api\/users\/([a-z0-9_-]{3,20})(?:\/games\/([A-Za-z0-9]{4,40})(?:\/comments(?:\/([a-f0-9]{6,20}))?)?)?$/i);
   if(um){

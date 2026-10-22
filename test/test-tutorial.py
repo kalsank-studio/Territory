@@ -29,7 +29,7 @@ with sync_playwright() as pw:
     pg.evaluate("()=>{ document.documentElement.dataset.theme='light'; render(); }")
     pg.click('.tut-page [data-act="tutplay"]')
     pg.wait_for_function("G && G.tutorial && UI.screen==='game'")
-    check(pg.evaluate("G.planets.map(p=>p.name).join()") == 'Verdant Shelf,Silt Hollow,Ember Ridge,Ashen Gate', 'the lesson board is laid out')
+    check(pg.evaluate("G.planets.map(p=>p.name).join()") == 'Dirge Winds,Ashfall Rim,The Shoal,Hallow Moon,Oasis', 'the lesson board is laid out')
 
     print('the guided game')
     DRIVE = """()=>{
@@ -57,7 +57,7 @@ with sync_playwright() as pw:
       if(d.t==='slot'){ const el = document.querySelector('.slot.summon-target[data-sp="'+t.sp+'"]'); if(!el) return 'nosum'; el.click(); return 'summon'; }
       return 'unknown';
     }"""
-    shots = {3:'t-g1-place', 7:'t-g2-harvest', 11:'t-g3-discard', 28:'t-g4-sahel', 38:'t-g5-summon'}
+    shots = {2:'t-g1-place', 6:'t-g2-harvest', 11:'t-g3-discard', 28:'t-g4-sahel', 36:'t-g5-aqitan'}
     stuck, last, t0 = 0, None, 0
     # a wrong move is refused
     pg.wait_for_function("tutStep() && !busy()", timeout=15000)
@@ -77,7 +77,7 @@ with sync_playwright() as pw:
         pg.wait_for_timeout(250)
     pg.wait_for_function("G && G.over", timeout=30000)
     res = pg.evaluate("JSON.stringify(G.result.won)")
-    check(res == '[3,1]', 'the lesson ends in a 3–1 win: ' + res)
+    check(res == '[3,1]', 'the lesson ends 3–1, Oasis tied: ' + res)
     check(pg.evaluate("TUT.step") == pg.evaluate("TUTOR_STEPS.length"), 'every coach step was used')
     pg.wait_for_selector('.tut-done'); pg.screenshot(path='shots/t-g6-done.png', full_page=True)
     check(pg.evaluate("PROFILE.games.length") == 0, 'the lesson isn’t added to the match history')

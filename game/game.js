@@ -533,14 +533,14 @@ function slotWins(pi, si, card, ownerIdx){
 /** A slot's condition for one card, at one place: the per-card check, or for a
     🏆 slot, whether it would be the strongest there. */
 function slotMet(pi, si, card, ownerIdx){
-  const cond = G.planets[pi].slots[si].cond;
-  if(!card) return false;
+  const slot = G.planets[pi].slots[si], cond = slot.cond;
+  if(!card || (slot.rew && slot.rew.type==='none')) return false;     // nothing to earn: nothing to light up
   return cond && cond.stat==='winner' ? slotWins(pi, si, card, ownerIdx) : condMet(cond, card);
 }
 /* A slot's condition, round-tripped through a data attribute so a drag can test
    it without a re-render. */
-function condAttr(cond){
-  const v = (!cond || cond.stat==='any') ? 'any' : cond.stat+':'+cond.op+':'+cond.val;
+function condAttr(cond, rew){
+  const v = rew && rew.type==='none' ? 'none' : (!cond || cond.stat==='any') ? 'any' : cond.stat+':'+cond.op+':'+cond.val;
   return `data-cond="${v}"`;
 }
 function condFromAttr(v){
@@ -1782,6 +1782,7 @@ function newGame(opts){
     const cards = (stack || deck.cards || []).map(id=>defById(id)).filter(Boolean).map(d=>instance(d,i));
     players.push({
       idx:i, name:(s.names && s.names[i]) || (!s.names && i===firstHumanOf(s, n) && profileName()) || PNAMES[i], kind:(s.kinds[i]||'human'),
+      emoji: (s.emojis && s.emojis[i]!=null) ? String(s.emojis[i]) : (s.kinds[i]||'human')==='bot' ? '\u{1F916}' : (i===firstHumanOf(s, n) ? (PROFILE.emoji||'') : ''),
       deck: stack ? cards.reverse() : shuffle(cards), hand:[], energy:0, planned:0, placed:[]
     });
   }
@@ -1823,7 +1824,7 @@ function newGame(opts){
   };
   /* Everything a replay needs to rebuild this game from its command log. */
   G.setup = {
-    seed, players:n, kinds: players.map(p=>p.kind), names: players.map(p=>p.name),
+    seed, players:n, kinds: players.map(p=>p.kind), names: players.map(p=>p.name), emojis: players.map(p=>p.emoji||''),
     deckOf: players.map((p,i)=>(deckById(s.deckOf[i] || LIB.decks[0].id)||{}).id),
     planets: planetCount, rounds: G.rounds, mulligan: G.mulligans, simul: G.simul, sandbox: G.sandbox,
     lib: replayLibSnapshot(players.map((p,i)=>deckById(s.deckOf[i] || LIB.decks[0].id)))
@@ -2652,7 +2653,7 @@ function showIntro(next){
 function introHTML(){
   const ps = G.players;
   const seat = (p,i)=>`<div class="iv-seat" style="--pc:${PCOLORS[i]};--d:${i*140}ms">
-      <span class="iv-orb">${esc((p.name||'?').trim().charAt(0).toUpperCase())}</span>
+      <span class="iv-orb ${p.emoji?'emo':''}">${esc(avatarText(p.emoji, p.name))}</span>
       <b class="iv-name">${esc(p.name)}</b>
       <span class="iv-kind">${p.kind==='bot'?'Bot':(G.online?'Online':'Player')} \u00B7 Player ${i+1}</span></div>`;
   const body = ps.map((p,i)=>(i?`<span class="iv-vs" style="--d:${i*140-70}ms">vs</span>`:'')+seat(p,i)).join('');
@@ -2922,7 +2923,7 @@ function cmdCheck(cmd){
     case 'place':
       if(!slotOk) return 'slot';
       return placingSeats().includes(cmd.seat) ? '' : 'turn';
-    case 'unplace': case 'lock':
+    case 'unplace': case 'lock': case 'commit':
       return placingSeats().includes(cmd.seat) ? '' : 'turn';
     case 'mulligan':
       return canMulligan(p) ? '' : 'nomulligan';
@@ -2960,12 +2961,55 @@ function dispatchCore(cmd){
   }
   const why = cmdCheck(cmd);
   if(why) return {ok:false, why};
-  const rec = Object.assign({n: G.cmdLog.length+1}, cmd);
+  const rec = Object.assign({n: G.cmdLog.length+1}, cmd, {rd:G.round, ph:G.phase});
   G.cmdLog.push(rec);                       // logged first: anything it sets off comes after it
   let ok = false;
   try{ ok = applyCommand(cmd)!==false; }
   finally{ if(!ok){ const i = G.cmdLog.indexOf(rec); if(i>=0) G.cmdLog.splice(i,1); } }
+  if(ok && cmd.t==='lock' && rec.ph==='placement') compressPlacement(rec);
   return {ok, why: ok ? '' : 'illegal'};
+}
+/** At lock-in, the placing a player did and took back this turn is folded into
+    one 'commit': where their cards ended up, and the order their hand was left
+    in. Replays and exports only ever see what they actually committed. */
+const PLACING_CMDS = ['place','unplace','move','unlock','lock','commit'];
+function compressPlacement(lockRec){
+  const seat = lockRec.seat, log = G.cmdLog, at = log.indexOf(lockRec);
+  if(at<0) return;
+  let from = at;
+  for(let i = at-1; i>=0; i--){
+    const c = log[i];
+    if(c.rd!==lockRec.rd || c.ph!=='placement') break;
+    if(c.seat!==seat) continue;
+    if(c.t==='mulligan') break;                 // a mulligan shuffles the hand back in: keep everything before it as it was
+    if(!PLACING_CMDS.includes(c.t)) break;
+    from = i;
+  }
+  const p = G.players[seat];
+  const commit = {t:'commit', seat, cards:p.placed.map(r=>({uid:r.uid, p:r.planetIdx, s:r.slotIdx})), hand:p.hand.map(c=>c.uid), rd:lockRec.rd, ph:'placement'};
+  const keep = log.filter((c,i)=> i<from || i>=at || c.seat!==seat || !PLACING_CMDS.includes(c.t));
+  const li = keep.indexOf(lockRec);
+  /* even with nothing left placed, taking cards back may have reordered the hand */
+  if(commit.cards.length || keep.length < log.length) keep.splice(li, 0, commit);
+  keep.forEach((c,i)=>{ c.n = i+1; });
+  G.cmdLog = keep;
+}
+/** Apply a 'commit': the same as placing those cards one by one, then the hand order. */
+function applyCommit(p, cmd){
+  const list = Array.isArray(cmd.cards) ? cmd.cards : [];
+  let cost = 0;
+  for(const r of list){
+    const c = p.hand.find(h=>h.uid===r.uid);
+    if(!c || !G.planets[r.p] || r.s<0 || r.s>=G.planets[r.p].slots.length || G.planets[r.p].board[p.idx][r.s]) return false;
+    cost += c.cost;
+  }
+  if(p.planned + cost > p.energy) return false;
+  for(const r of list) if(!placeCard(p, r.uid, r.p, r.s)) return false;
+  if(Array.isArray(cmd.hand)){
+    const order = new Map(cmd.hand.map((u,i)=>[u,i]));
+    p.hand.sort((a,b)=>(order.has(a.uid)?order.get(a.uid):1e9) - (order.has(b.uid)?order.get(b.uid):1e9));
+  }
+  return true;
 }
 
 /** Try a placement-type command on a throwaway copy of the view. */
@@ -2994,6 +3038,7 @@ function applyCommand(cmd){
       return !!at && at.from==='board' && unplaceCard(p, at.planetIdx, at.slotIdx);
     }
     case 'lock':      lockIn(p.idx); return true;
+    case 'commit':    return applyCommit(p, cmd);
     case 'mulligan':  return mulligan(p);
     case 'unlock':    return unlockSeat(p);
     case 'flip':
@@ -3124,7 +3169,6 @@ const ENGINE_ONLY = ['rng','botRng','seed','cmdLog','fxQueue','trigBuf','fxAfter
 function playerView(state, seat){
   const g = state || G;
   const v = JSON.parse(JSON.stringify(g, function(k, val){ return (this===g && ENGINE_ONLY.includes(k)) ? undefined : val; }));
-  if(g.over && g.setup) v.replay = replayBundle(g);     // once it's over nothing is secret: everyone gets the replay
   const ch = g.choice;
   const chooser = chooserOf(ch);
   const shownHand = ch && ch.kind==='discard' && chooser===seat ? ch.player : null;
@@ -3164,6 +3208,7 @@ function playerView(state, seat){
   })(v);
   v.viewer = seat;
   v.isView = true;
+  if(g.over && g.setup) v.replay = replayBundle(g);     // once it's over nothing is secret: everyone gets the replay (after the scrub)
   return v;
 }
 
@@ -4631,7 +4676,7 @@ function bumpPool(p){
   const spend = document.querySelector('[data-spend]');
   if(spend) spend.textContent = Math.max(0, target - p.planned);
   const bar = document.querySelector('[data-pben]');
-  if(bar) bar.textContent = '\u26A1' + target;
+  if(bar) bar.innerHTML = '<span class="ic ic-e">\u26A1</span>' + target;
 }
 
 /* --- cards sliding between places ------------------------------------------
@@ -4689,6 +4734,29 @@ let scrollMemo = {strip:0, hand:0};
 /** A screen, sheet or banner that was already showing before this redraw
     doesn't play its entrance again: without this, every redraw during the
     dice roll or a sheet restarts its fade, and it flickers. */
+/* ⚡ and 💪 wherever they appear in text get a class of their own, so the
+   stylesheet can colour them (Energy blue, Power white) the same everywhere. */
+const ICON_RE = /(\u26A1\uFE0F?|\u{1F4AA}[\u{1F3FB}-\u{1F3FF}]?)/u;
+function paintIcons(root){
+  if(!root || typeof document==='undefined' || !document.createTreeWalker) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {acceptNode: n=>{
+    const p = n.parentNode;
+    if(!p || /^(SCRIPT|STYLE|TEXTAREA|INPUT|OPTION|SELECT)$/.test(p.nodeName) || (p.classList && p.classList.contains('ic'))) return NodeFilter.FILTER_REJECT;
+    return ICON_RE.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+  }});
+  const hits = [];
+  while(w.nextNode()) hits.push(w.currentNode);
+  hits.forEach(n=>{
+    const parts = n.nodeValue.split(new RegExp(ICON_RE.source, 'gu'));
+    const frag = document.createDocumentFragment();
+    parts.forEach(t=>{
+      if(!t) return;
+      if(ICON_RE.test(t) && t.match(ICON_RE)[0]===t){ const sp = document.createElement('span'); sp.className = 'ic ' + (t.charCodeAt(0)===0x26A1 ? 'ic-e' : 'ic-p'); sp.textContent = t; frag.appendChild(sp); }
+      else frag.appendChild(document.createTextNode(t));
+    });
+    n.parentNode.replaceChild(frag, n);
+  });
+}
 function steadyEntrances(){
   const seen = new Set();
   document.querySelectorAll('#overlay [data-ak], #overlay .sheet, #overlay .pick-banner, #overlay .choice-side, #app .planet').forEach(el=>{
@@ -4715,7 +4783,7 @@ function render(){
     case 'setup':  html = viewSetup(); break;
     case 'game':   html = (G && G.over && !UI.review) ? viewResult() : viewBoard(); break;
     case 'studio': html = viewStudio(); break;
-    case 'decks':  html = viewDecks(); break;
+    case 'decks':  studioTab = 'decks'; UI.screen = 'studio'; html = viewStudio(); break;   // Decks is a Studio tab now
     case 'sprites':studioTab = 'art'; UI.screen = 'studio'; html = viewStudio(); break;   // old link: Art & data is a Studio tab now
     case 'rules':  html = viewRules(); break;
     case 'online': html = viewOnline(); break;
@@ -4725,10 +4793,16 @@ function render(){
     case 'tutorial': html = viewTutorial(); break;
     case 'player': html = viewPlayer(); break;
   }
+  maybeWinFx();
+  /* a redraw while someone is typing keeps them in the same box, caret and all */
+  const ae = document.activeElement, keyAttr = ae && ae.dataset && ['so','pf','onInput'].find(k=>ae.dataset[k]);
+  const keep = keyAttr ? {sel:`[data-${keyAttr.replace(/[A-Z]/g, m=>'-'+m.toLowerCase())}="${ae.dataset[keyAttr]}"]`, a:ae.selectionStart, b:ae.selectionEnd} : null;
   $('#app').innerHTML = html;
   $('#overlay').innerHTML = viewOverlays() + (UI.rp && UI.screen==='game' ? replayBarHTML() : '') + (UI.screen==='game' && G && G.tutorial ? tutCoachHTML() : '');
   $('#app').classList.toggle('intro-deal', !!(UI.screen==='game' && UI.intro && UI.intro.stage==='deal'));
   steadyEntrances();
+  paintIcons($('#app')); paintIcons($('#overlay'));
+  if(keep){ const n = document.querySelector(keep.sel); if(n && document.activeElement!==n){ n.focus(); try{ n.setSelectionRange(keep.a, keep.b); }catch(e){} } }
   if(G && G.tutorial && UI.screen==='game') tutMark();
   if(G && G.online && !G.isView && ON.role==='host') hostBroadcast();     // guests see what the host sees
 
@@ -4783,12 +4857,10 @@ function viewTitle(){
       <div class="title-actions">
         ${inRoom() ? `<button class="btn primary" data-on="backtoroom">Back to room ${esc(ON.code)}<span class="k">${G && (G.online||G.isView) ? 'game in progress' : 'lobby'}</span></button>` : ''}
         <button class="btn ${inRoom()?'':'primary'}" data-on="open">Play<span class="k">host, join, or on this device</span></button>
-        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, art &amp; data</span></button>
-        <button class="btn" data-act="go" data-screen="decks">Decks<span class="k">${LIB.decks.length} saved</span></button>
-        <button class="btn" data-act="go" data-screen="social">Social<span class="k">${ACCT ? (SO.incoming ? SO.incoming+' friend request'+(SO.incoming===1?'':'s') : (SO.data && SO.data.invites && SO.data.invites.length ? 'you have an invite' : 'friends, invites, comments')) : 'friends, invites, comments'}</span>${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? '<span class="so-dot" aria-hidden="true"></span>' : ''}</button>
-        <button class="btn" data-act="go" data-screen="replay">Replay<span class="k">watch an exported game again</span></button>
-        <button class="btn" data-act="go" data-screen="profile">Profile<span class="k">${(()=>{ const st = profileStats(); return st.played ? st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 '+esc(ACCT ? ACCT.user : (profileName()||'no name yet')) : esc(ACCT ? ACCT.user : (profileName()||'sign in, record, history')); })()}</span></button>
         <button class="btn" data-act="go" data-screen="tutorial">Tutorial<span class="k">learn to play, then a guided game</span></button>
+        <button class="btn" data-act="go" data-screen="${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? 'social' : 'profile'}">Social<span class="k">${ACCT && SO.incoming ? SO.incoming+' friend request'+(SO.incoming===1?'':'s') : ACCT && SO.data && SO.data.invites && SO.data.invites.length ? 'you have an invite' : (()=>{ const st = profileStats(); return (PROFILE.emoji ? esc(PROFILE.emoji)+' ' : '') + (st.played ? 'profile '+st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 friends' : 'profile, friends, invites'); })()}</span>${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? '<span class="so-dot" aria-hidden="true"></span>' : ''}</button>
+        <button class="btn" data-act="go" data-screen="replay">Replay<span class="k">watch a game again \u00B7 everyone\u2019s stats</span></button>
+        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, decks, art &amp; data</span></button>
         <button class="btn ghost" data-act="go" data-screen="rules">Full rules</button>
       </div>
     </div>
@@ -5006,7 +5078,7 @@ function playersBarHTML(meIdx, simulPlace){
     const en = me ? shownEnergy(q) : q.energy;
     const state = simulPlace ? (q.locked ? '\u2713 locked in' : 'placing\u2026') : '';
     return `<span class="lockchip ${simulPlace&&q.locked?'in':''} ${simulPlace&&!q.locked?'placing':''} ${me?'me':''}" style="--pc:${PCOLORS[i]}">
-      <span class="dot" style="--pc:${PCOLORS[i]}"></span><b class="pb-name">${esc(me?'You':q.name)}</b>
+      <span class="dot" style="--pc:${PCOLORS[i]}"></span><b class="pb-name">${q.emoji?`<span class="pb-emo">${esc(q.emoji)}</span>`:''}${esc(me?'You':q.name)}</b>
       <span class="pb-stat" ${me?'data-pben':''} aria-label="${en} Energy">\u26A1${en}</span><span class="pb-stat" aria-label="${q.hand.length} cards in hand">\u{1F0CF}${q.hand.length}</span>
       ${i===first ? `<span class="pb-first" title="Reveals first this round">1st</span>` : ''}
       ${state ? `<i>${state}</i>` : ''}
@@ -5070,7 +5142,7 @@ function planetHTML(pl, pi, meIdx){
   const selHere = sel && !(sel.faceUp && locate(sel.uid) && locate(sel.uid).planetIdx!==pi);
   const rules = pl.slots.map((s,si)=>{
     const met = selHere ? slotMet(pi, si, sel, meIdx) : false;
-    return `<div class="rule ${selHere?(met?'match':'miss'):''}" ${condAttr(s.cond)} data-p="${pi}" data-s="${si}">
+    return `<div class="rule ${selHere?(met?'match':'miss'):''}" ${condAttr(s.cond, s.rew)} data-p="${pi}" data-s="${si}">
       <span class="cond">${condShort(s.cond)}</span>
       <span class="rew ${s.rew.type==='draw'?'draw':''}">${rewText(s.rew)}</span>
     </div>`;
@@ -5139,7 +5211,7 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
     const open = isMine && (placing() || (rearranging() && selFits));
     const met = open && sel ? slotMet(pi, si, sel, playerIdx) : false;
     const cls = ['slot','empty', open?'open':'', (open&&sel)?(met?'match':'plain'):'', shuffling&&!open?dest:''].filter(Boolean).join(' ');
-    const drop = (isMine && arranging()) ? `data-drop="slot" data-p="${pi}" data-s="${si}" ${condAttr(slot.cond)}` : '';
+    const drop = (isMine && arranging()) ? `data-drop="slot" data-p="${pi}" data-s="${si}" ${condAttr(slot.cond, slot.rew)}` : '';
     const act  = (open && sel && selFits) ? `data-act="drop" data-p="${pi}" data-s="${si}"` : '';
     return `<button data-sp="${pi}:${playerIdx}:${si}" class="${cls}" ${drop} ${act} ${act?'':'disabled'} aria-label="Slot ${si+1}, ${condText(slot.cond)}, ${rewLong(slot.rew)}">
       <span class="slot-mark">${open&&sel?(met?'\u2713':'+'):''}</span>
@@ -5177,14 +5249,14 @@ function slotHTML(pl, pi, playerIdx, si, isMine){
     inner = miniHTML(card, pc, met, committed, peeking, actState);
   }
 
-  const harvest = (met && card.faceUp) ? `<span class="harvest ${slot.rew.type==='draw'?'draw':''}">${rewText(slot.rew)}</span>` : '';
+  const harvest = '';
 
   /* Face-down commitments go anywhere; cards already turned over shuffle
      between the slots of the planet they are on. */
   const kind = (isMine && arranging()) ? pickupKind(currentPlayer(), pi, si) : null;
   const liftable = !!kind;
   const lifted = liftable && UI.sel===card.uid;
-  const drop = (isMine && arranging()) ? `data-drop="slot" data-p="${pi}" data-s="${si}" ${condAttr(slot.cond)}` : '';
+  const drop = (isMine && arranging()) ? `data-drop="slot" data-p="${pi}" data-s="${si}" ${condAttr(slot.cond, slot.rew)}` : '';
   const drag = liftable ? `data-drag="board" data-kind="${kind}" data-uid="${card.uid}" data-p="${pi}" data-s="${si}"` : '';
   /* With something already in the air, this slot becomes a destination —
      that is how a tap-only player swaps two cards over. That comes before
@@ -5618,7 +5690,32 @@ function graveSheetHTML(){
   </div>`;
 }
 
+function winFxHTML(){
+  const r = G.result, w = r.winner;
+  const ps = w==null ? G.players.filter((p,i)=>r.won[i]===Math.max(...r.won)) : [G.players[w]];
+  const pc = w==null ? 'var(--ink-dim)' : PCOLORS[w];
+  const sparks = Array.from({length:22}, (_,k)=>`<i style="--a:${Math.round(k*360/22 + uiRnd(12))}deg;--d:${(120+uiRnd(140))}px;--t:${(k%5)*60}ms;--c:${k%3===0?'#fff':pc}"></i>`).join('');
+  const mine = r.won.slice(), top = w==null ? mine[0] : mine[w], rest = w==null ? top : Math.max(...mine.filter((_,i)=>i!==w));
+  return `<div class="win-fx ${w==null?'draw':''}" style="--pc:${pc}" data-act="winskip" role="dialog" aria-label="${w==null?'A draw':esc(G.players[w].name)+' wins'}">
+    <div class="wf-inner">
+      <div class="wf-burst" aria-hidden="true">${sparks}</div>
+      <div class="wf-avatars">${ps.map(p=>`<span class="wf-orb ${p.emoji?'emo':''}" style="--pc:${PCOLORS[p.idx]}">${esc(avatarText(p.emoji, p.name))}</span>`).join('')}</div>
+      <div class="wf-name">${w==null ? 'A draw' : esc(G.players[w].name)}</div>
+      <div class="wf-sub">${w==null ? 'Nobody takes it this time' : r.reason && r.reason!=='planets won' ? `wins \u2014 ${top} planets each, decided by ${esc(r.reason)}` : `wins \u2014 ${top} planet${top===1?'':'s'} to ${rest}`}</div>
+      <div class="rs-tap">Tap to continue</div>
+    </div></div>`;
+}
+const WIN_FX_MS = 3400;
+/** The first time a finished game is drawn, the winner gets their moment. */
+function maybeWinFx(){
+  if(!G || !G.over || !G.result || UI.screen!=='game' || UI.review || !animOn()) return;
+  const key = (G.gameId||'') + ':' + (G.isView ? 'v' : 'h');
+  if(UI.winSeen===key) return;
+  UI.winSeen = key; UI.winFx = true;
+  clearTimeout(UI.winT); UI.winT = setTimeout(()=>{ if(UI.winFx){ UI.winFx = false; render(); } }, WIN_FX_MS);
+}
 function viewOverlays(){
+  if(UI.winFx && UI.screen==='game' && G && G.over && G.result) return winFxHTML();
   if(SO.popup && !(UI.screen==='game' && G && !G.over && (G.online||G.isView))) return invitePopupHTML();
   let out = '';
   if(UI.screen==='game' && G && (G.online || G.isView)){ const nb = netStatusHTML(); if(nb) out += `<div class="net-banners">${nb}</div>`; }
@@ -6016,13 +6113,14 @@ function viewRules(){
 let studioTab = 'cards';
 
 function viewStudio(){
-  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['import','Import & export'],['art','Art & data']];
+  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']];
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
     `<button class="chip ${studioTab===k?'on':''}" data-act="tab" data-v="${k}">${l}${k==='cards'&&flagged?` <span class="flagdot">${flagged}</span>`:''}</button>`).join('')}</div>`;
   const body = studioTab==='planets' ? planetStudio()
              : studioTab==='import'  ? importStudio()
              : studioTab==='art'     ? spritesBody()
+             : studioTab==='decks'   ? decksBody()
              : cardStudio(studioTab==='tokens');
   return `${topbar('Studio')}<div class="page stack">${bar}${body}</div>`;
 }
@@ -6601,6 +6699,10 @@ function planetStudio(){
 
 /* --- DECKS ----------------------------------------------------- */
 
+/** The deck builder, as a Studio tab. */
+function decksBody(){
+  return viewDecks().replace(topbar('Decks'), '').replace('<div class="page stack', '<div class="stack');
+}
 function viewDecks(){
   const sel = LIB.decks.find(d=>d.id===UI.editDeck) || LIB.decks[0];
   if(sel) UI.editDeck = sel.id;
@@ -6904,6 +7006,7 @@ function decorateFor(card, onlyPlanet){
 
 /** Does a card meet the slot behind this element? A 🏆 slot is judged where it is. */
 function metAt(el, card){
+  if(el.dataset.cond==='none') return false;
   const cond = condFromAttr(el.dataset.cond);
   if(cond.stat==='winner' && el.dataset.p!=null && el.dataset.s!=null) return slotWins(+el.dataset.p, +el.dataset.s, card, card.owner);
   return condMet(cond, card);
@@ -7026,6 +7129,7 @@ document.addEventListener('click', e=>{
     case 'peekdef': inspectDef(t.dataset.id); break;
     case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
     case 'pftab': UI.pfTab = t.dataset.v; render(); break;
+    case 'pfemoji': setProfileEmoji(t.dataset.v); render(); break;
     case 'soreload': SO.data = null; soLoad(); render(); break;
     case 'souser': if(e.target.closest('[data-act="soinvite"]')) break; soOpenUser(t.dataset.u); break;
     case 'soinvite': e.stopPropagation(); if(inRoom() && isHost()) soAct('invite', t.dataset.u, {code:ON.code}); break;
@@ -7041,8 +7145,8 @@ document.addEventListener('click', e=>{
     case 'sojoin': soJoin({code:t.dataset.code, from:t.dataset.from}); break;
     case 'sodismiss': acctCall('POST', '/api/social/dismiss', {code:t.dataset.code}).catch(()=>{}); if(SO.data) SO.data.invites = SO.data.invites.filter(i=>i.code!==t.dataset.code); render(); break;
     case 'sodismisspop': SO.popup = null; render(); break;
-    case 'stsort': UI.stSort = t.dataset.v; render(); break;
-    case 'stall': UI.stAll = !UI.stAll; render(); break;
+    case 'stsort': if(t.dataset.g==='1') UI.stSortG = t.dataset.v; else UI.stSort = t.dataset.v; render(); break;
+    case 'stall': if(t.dataset.g==='1') UI.stAllG = !UI.stAllG; else UI.stAll = !UI.stAll; render(); break;
     case 'histexport': { const g = PROFILE.games.find(x=>x.id===t.dataset.id);
       if(g && !g.log && g.hasLog && ACCT){ fetchLog(g.id).then(()=>exportGame(g)); } else exportGame(g); break; }
     case 'gameexport': exportGame(currentGameEntry()); break;
@@ -7054,6 +7158,7 @@ document.addEventListener('click', e=>{
     case 'rpspeed': if(UI.rp){ const sp = [1,2,4]; UI.rp.speed = UI.rpSpeed = sp[(sp.indexOf(UI.rp.speed)+1)%sp.length]; render(); } break;
     case 'rpseat': if(UI.rp){ UI.rp.seat = +t.dataset.i; UI.reviewSeat = UI.rp.seat; render(); } break;
     case 'rpexit': stopReplay(); break;
+    case 'gstoggle': UI.gsOpen = UI.gsOpen===false; render(); break;
     case 'histclear':
       if(!UI.pfClear){ UI.pfClear = true; render(); setTimeout(()=>{ UI.pfClear = false; if(UI.screen==='profile') render(); }, 3500); break; }
       UI.pfClear = false; PROFILE.games = []; PROFILE.pending = []; saveProfile();
@@ -7166,6 +7271,7 @@ document.addEventListener('click', e=>{
     case 'roundgo': if(UI.roundGo) UI.roundGo(); break;
     case 'dicego': if(UI.diceGo) UI.diceGo(); break;
     case 'introgo': if(UI.introGo) UI.introGo(); break;
+    case 'winskip': UI.winFx = false; clearTimeout(UI.winT); render(); break;
 
     /* after the game */
     case 'review': UI.review = true; UI.sheet = null; render(); break;
@@ -7666,6 +7772,7 @@ function connect(){
   const q = new URLSearchParams();
   if(ON.token) q.set('token', ON.token);
   if(onlineName()) q.set('name', onlineName());
+  q.set('emoji', PROFILE.emoji||'');
   const ws = new WebSocket(apiURL('/api/rooms/'+ON.code+'/socket?'+q).replace(/^http/, 'ws'));
   ON.ws = ws;
   ws.onmessage = e => { ON.lastPong = Date.now(); if(e.data==='pong') return; let m; try{ m = JSON.parse(e.data); }catch(err){ return; } onMessage(m); };
@@ -7807,12 +7914,13 @@ function startOnlineGame(){
   const n = ON.roomSeats, L = ON.lobby;
   const kinds = Array.from({length:n}, (_,i)=> i===0 || ON.seats.some(s=>s.seat===i) ? 'human' : 'bot');
   const names = Array.from({length:n}, (_,i)=> kinds[i]==='bot' ? 'Bot '+(i+1) : seatName(i));
+  const emojis = Array.from({length:n}, (_,i)=> kinds[i]==='bot' ? '\u{1F916}' : i===0 ? (PROFILE.emoji||'') : ((ON.seats.find(x=>x.seat===i)||{}).emoji||''));
   LIB.settings.turnTimer = L.turnTimer; LIB.settings.turnTimerCustom = false; LIB.settings.choiceTimer = L.choiceTimer;
   saveSoon();
   ON.sent = {};
   NET.seat = 0; NET.send = null;
   UI.screen = 'game'; UI.sheet = null;
-  newGame({online:true, players:n, kinds, names, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
+  newGame({online:true, players:n, kinds, names, emojis, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
            sandbox:!!L.sandbox, mulligan:L.mulligan!==false, hide:false, placement:'simultaneous'});
   hostBroadcast();
 }
@@ -8133,7 +8241,7 @@ function viewLobby(){
       : `<span class="tiny muted">${esc(deckName(L.seats[i].deck))}</span>`;
     return `<div class="lobby-seat ${s&&s.online||me?'here':''}" style="--pc:${PCOLORS[i]}">
       <span class="dot"></span>
-      <div class="ls-name"><b>${esc(s ? s.name : (host ? 'Bot '+(i+1) : PNAMES[i]))}</b><span>${i===0?'Host · ':''}${status}</span></div>
+      <div class="ls-name"><b>${s && s.emoji ? esc(s.emoji)+' ' : ''}${esc(s ? s.name : (host ? 'Bot '+(i+1) : PNAMES[i]))}</b><span>${i===0?'Host · ':''}${status}</span></div>
       <div class="ls-deck">${deck}</div>
     </div>`;
   }).join('');
@@ -8393,7 +8501,7 @@ function replayLibSnapshot(decks){
 function replayBundle(g){
   g = g || G;
   if(!g.setup) return g.replay || null;
-  return {v:GAME_FILE_V, setup:g.setup, cmds:(g.cmdLog||[]).map(c=>{ const o = Object.assign({}, c); delete o.n; return o; })};
+  return clone({v:GAME_FILE_V, setup:g.setup, cmds:(g.cmdLog||[]).map(c=>{ const o = Object.assign({}, c); delete o.n; delete o.rd; delete o.ph; return o; })});
 }
 /** The file a game is exported as: what happened (the log), how it ended, and
     the replay. */
@@ -8449,7 +8557,8 @@ function startReplay(file){
   UI.rp = {file, cmds: rp.cmds, i:0, playing:true, speed: UI.rpSpeed||1, seat, saved:mine, idleSince:null, err:'', back: UI.screen};
   UI.replaying = true;
   UI.screen = 'game'; UI.sheet = null;
-  newGame({seed:st.seed, players:st.players, kinds:st.kinds, names:st.names, deckOf:st.deckOf,
+  UI.winSeen = null;
+  newGame({seed:st.seed, players:st.players, kinds:st.kinds, names:st.names, emojis:st.emojis, deckOf:st.deckOf,
            planets:st.planets, rounds:st.rounds, mulligan:st.mulligan, forceSimul:!!st.simul, sandbox:!!st.sandbox, online:false});
   G.gameId = 'replay';
   render();
@@ -8524,6 +8633,22 @@ function rpLogSheetHTML(){
     <div class="log">${f.log.map(l=>l.rd ? `<div class="rd">${esc(l.t)}</div>` : `<div>${l.w!=null?`<b style="color:${pc(l.w)}">●</b> `:''}${esc(l.t)}</div>`).join('')}</div>
   </div>`;
 }
+/* --- everyone's stats, from the server (shown on the Replay page for now) --- */
+const GS = { data:null, at:0, loading:false, err:'' };
+async function loadGlobalStats(){
+  GS.loading = true; GS.err = '';
+  try{ const r = await fetch(location.origin + '/api/stats'); if(!r.ok) throw new Error(r.status===404 ? 'This needs the new server/accounts.js on your site.' : 'The server said no.'); GS.data = await r.json(); }
+  catch(e){ GS.err = e.message || 'Could not reach the server.'; }
+  GS.at = Date.now(); GS.loading = false;
+  if(UI.screen==='replay') render();
+}
+function globalStatsBlock(){
+  if(!accountsAvailable()) return '';
+  if(!GS.loading && Date.now()-GS.at > 60000) loadGlobalStats();
+  const open = UI.gsOpen !== false;
+  return `<div class="section-head gs-head"><h3>Everyone\u2019s stats</h3><p><button class="btn sm ghost" data-act="gstoggle">${open?'Hide':'Show'}</button></p></div>
+    ${!open ? '' : GS.err ? `<div class="acct-err">${esc(GS.err)}</div>` : !GS.data ? '<div class="net-wait"><span class="spinner"></span>Adding everything up\u2026</div>' : `<div class="stack gs-body">${statsHTML(GS.data, {global:true})}</div>`}`;
+}
 function viewReplay(){
   const f = UI.rpLoaded;
   const kept = PROFILE.games.filter(g=>g.replay || g.hasReplay).slice(0, 30);
@@ -8549,6 +8674,7 @@ function viewReplay(){
         <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
         <span class="pf-main"><b>vs ${opponentsOf(g).map(o=>esc(o.name)).join(', ')}</b><span>${whenText2(g.at)}</span></span>
         <span class="pf-score">${scoreLine(g)}<small>▶ watch</small></span></button>`).join('')}</div>` : `<div class="empty-note">Games you finish from now on can be watched again here.</div>`}
+    ${globalStatsBlock()}
   </div>`;
 }
 /** The replay for a history entry, fetching it from the account if needed. */
@@ -8616,10 +8742,10 @@ function soSearch(q){
   SO.q = q;
   clearTimeout(SO.qT);
   const v = q.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
-  if(!v){ SO.results = null; render(); return; }
+  if(!v){ SO.results = null; SO.searchErr = ''; render(); return; }
   SO.qT = setTimeout(async ()=>{
-    try{ const r = await acctCall('GET', '/api/users?q='+encodeURIComponent(v)); if(SO.q===q){ SO.results = r.users; renderKeepFocus(); } }
-    catch(e){ SO.results = []; renderKeepFocus(); }
+    try{ const r = await acctCall('GET', '/api/users?q='+encodeURIComponent(v)); if(SO.q===q){ SO.results = r.users; SO.searchErr = ''; renderKeepFocus(); } }
+    catch(e){ SO.results = null; SO.searchErr = e.status===404 ? 'Search isn\u2019t on the server yet \u2014 upload the new server/accounts.js and deploy.' : (e.message || 'Search didn\u2019t work.'); renderKeepFocus(); }
   }, 250);
 }
 /** Re-render without losing the caret in the search box. */
@@ -8704,7 +8830,7 @@ function invitePopupHTML(){
   const i = SO.popup;
   if(!i) return '';
   return `<div class="scrim" data-act="sodismisspop"></div><div class="sheet invite-pop" role="dialog" aria-label="Game invite">
-    <div class="ip-head"><span class="acct-badge" aria-hidden="true">${esc((i.name||i.from).charAt(0).toUpperCase())}</span>
+    <div class="ip-head">${avatarHTML(i.emoji, i.name||i.from)}
       <div><b>${esc(i.name||i.from)}</b> invited you to a game<span class="tiny muted">Room ${esc(i.code)} · @${esc(i.from)}</span></div></div>
     <div class="row" style="gap:8px">
       <button class="btn primary" data-act="sojoin" data-code="${esc(i.code)}" data-from="${esc(i.from)}">Join the game</button>
@@ -8714,40 +8840,71 @@ function invitePopupHTML(){
   </div>`;
 }
 const recordText = r => !r ? '' : r.played ? `${r.wins}–${r.losses}${r.draws?'–'+r.draws:''} · ${Math.round(100*r.wins/r.played)}% wins` : 'no games yet';
+function socialTabsHTML(on){
+  const n = ACCT ? (SO.incoming||0) + ((SO.data && SO.data.invites) ? SO.data.invites.length : 0) : 0;
+  return `<div class="seg pf-tabs" role="tablist">
+    <button class="chip ${on==='profile'?'on':''}" role="tab" aria-selected="${on==='profile'}" data-act="go" data-screen="profile">${PROFILE.emoji ? esc(PROFILE.emoji)+' ' : ''}Profile</button>
+    <button class="chip ${on==='friends'?'on':''}" role="tab" aria-selected="${on==='friends'}" data-act="go" data-screen="social">Friends${n?` <span class="flagdot">${n}</span>`:''}</button>
+  </div>`;
+}
+/* --- the profile emoji -------------------------------------------------- */
+const EMOJI_CHOICES = ['\u{1FA90}','\u{1F319}','\u2604\uFE0F','\u{1F30C}','\u{1F6F8}','\u{1F680}','\u{1F47E}','\u{1F47D}','\u{1F916}','\u{1F331}','\u{1F33F}','\u{1F344}','\u{1F338}','\u{1F335}','\u{1F340}','\u{1F30A}','\u{1F525}','\u{1F48E}','\u{1F9FF}','\u{1F451}','\u{1F98A}','\u{1F419}','\u{1F989}','\u{1F422}','\u{1F41D}','\u{1F98B}','\u{1F409}','\u{1F984}','\u{1F43A}','\u{1F5FF}'];
+const cleanEmoji = e => { const v = String(e||'').replace(/[\u0000-\u001f\s]/g,'').slice(0, 16); return /[A-Za-z0-9<>]/.test(v) ? '' : v; };
+/** What stands for a player: their emoji, or their initial. */
+const avatarText = (emoji, name) => emoji || String(name||'?').trim().charAt(0).toUpperCase() || '?';
+const avatarHTML = (emoji, name, cls) => `<span class="acct-badge ${cls||''} ${emoji?'emo':''}" aria-hidden="true">${esc(avatarText(emoji, name))}</span>`;
+function emojiPickerHTML(){
+  const cur = PROFILE.emoji || '';
+  return `<div class="field emoji-field"><span>Your emoji</span>
+    <div class="emoji-grid" role="radiogroup" aria-label="Profile emoji">
+      <button class="emo-pick ${!cur?'on':''}" data-act="pfemoji" data-v="" role="radio" aria-checked="${!cur}" title="Your initial">${esc(avatarText('', PROFILE.name||(ACCT&&ACCT.user)||'?'))}</button>
+      ${EMOJI_CHOICES.map(e=>`<button class="emo-pick ${cur===e?'on':''}" data-act="pfemoji" data-v="${e}" role="radio" aria-checked="${cur===e}">${e}</button>`).join('')}
+    </div>
+    <label class="row" style="gap:8px;align-items:center;flex-wrap:nowrap;margin-top:6px"><span class="tiny muted">Or type your own</span>
+      <input data-pf="emoji" maxlength="8" placeholder="\u{1F642}" value="${esc(EMOJI_CHOICES.includes(cur)?'':cur)}" style="width:5.5em;text-align:center" aria-label="Your own emoji"></label>
+    <p class="tiny muted" style="margin:2px 0 0">It sits beside your name in games, on the opening screen, and when you win.</p>
+  </div>`;
+}
+function setProfileEmoji(v){
+  PROFILE.emoji = cleanEmoji(v); saveProfile();
+  if(ACCT){ PROFILE.nameDirty = true; clearTimeout(AC.nameT); AC.nameT = setTimeout(pushName, 500); }
+}
 function viewSocial(){
   if(!accountsAvailable()) return `${topbar('Social')}<div class="page stack"><div class="callout">Friends work on the website copy of Territory, with an account.</div></div>`;
   if(!ACCT) return `${topbar('Social')}<div class="page stack social-page">
+      ${socialTabsHTML('friends')}
       <div class="card-panel stack"><b>Sign in to find friends</b>
       <p class="tiny muted" style="margin:0">With an account you can add up to ${FRIENDS_MAX} friends, see their records and games, comment on matches, and invite friends straight into a room you host.</p>
       <button class="btn primary" data-act="go" data-screen="profile" style="align-self:flex-start">Sign in or make an account</button></div></div>`;
   if((!SO.data || Date.now()-(SO.at||0) > 30000) && !SO.loading && !SO.err){ SO.at = Date.now(); soLoad(); }
   const d = SO.data;
-  const who = (u, name) => `<span class="so-who"><span class="acct-badge sm" aria-hidden="true">${esc((name||u).charAt(0).toUpperCase())}</span><span><b>${esc(name||u)}</b><small>@${esc(u)}</small></span></span>`;
+  const who = (u, name, emoji) => `<span class="so-who">${avatarHTML(emoji, name||u, 'sm')}<span><b>${esc(name||u)}</b><small>@${esc(u)}</small></span></span>`;
   const busy = (k,u) => SO.busy[k+':'+u] ? 'disabled' : '';
   const invites = d && d.invites && d.invites.length ? `<div class="section-head"><h3>Game invites</h3></div>
-    <div class="so-list">${d.invites.map(i=>`<div class="so-row invite">${who(i.from, i.name)}<span class="tiny muted">Room ${esc(i.code)}</span>
+    <div class="so-list">${d.invites.map(i=>`<div class="so-row invite">${who(i.from, i.name, i.emoji)}<span class="tiny muted">Room ${esc(i.code)}</span>
       <button class="btn sm primary" data-act="sojoin" data-code="${esc(i.code)}" data-from="${esc(i.from)}">Join game</button>
       <button class="btn sm ghost" data-act="sodismiss" data-code="${esc(i.code)}" aria-label="Dismiss">✕</button></div>`).join('')}</div>` : '';
   const incoming = d && d.incoming.length ? `<div class="section-head"><h3>Friend requests</h3><p>${d.incoming.length}</p></div>
-    <div class="so-list">${d.incoming.map(o=>`<div class="so-row">${who(o.user, o.name)}
+    <div class="so-list">${d.incoming.map(o=>`<div class="so-row">${who(o.user, o.name, o.emoji)}
       <button class="btn sm primary" data-act="soaccept" data-u="${esc(o.user)}" ${busy('accept',o.user)}>Accept</button>
       <button class="btn sm ghost" data-act="sodecline" data-u="${esc(o.user)}" ${busy('decline',o.user)}>Decline</button></div>`).join('')}</div>` : '';
   const outgoing = d && d.outgoing.length ? `<div class="so-sub">Waiting for an answer</div>
-    <div class="so-list">${d.outgoing.map(o=>`<div class="so-row dim">${who(o.user, o.name)}<span class="tiny muted">Request sent</span>
+    <div class="so-list">${d.outgoing.map(o=>`<div class="so-row dim">${who(o.user, o.name, o.emoji)}<span class="tiny muted">Request sent</span>
       <button class="btn sm ghost" data-act="sodecline" data-u="${esc(o.user)}" ${busy('decline',o.user)}>Take back</button></div>`).join('')}</div>` : '';
-  const friends = d ? (d.friends.length ? `<div class="so-list">${d.friends.map(f=>`<button class="so-row tap" data-act="souser" data-u="${esc(f.user)}">${who(f.user, f.name)}
+  const friends = d ? (d.friends.length ? `<div class="so-list">${d.friends.map(f=>`<button class="so-row tap" data-act="souser" data-u="${esc(f.user)}">${who(f.user, f.name, f.emoji)}
       <span class="so-rec">${esc(recordText(f.record))}</span>
       ${inRoom() && isHost() && ON.lobby ? `<span class="btn sm ${SO.invited[f.user]===ON.code?'ghost':''}" data-act="soinvite" data-u="${esc(f.user)}">${SO.invited[f.user]===ON.code?'Invited':'Invite'}</span>` : '<span class="pf-go">›</span>'}</button>`).join('')}</div>`
       : `<div class="empty-note">No friends yet. Search for a username below.</div>`) : '';
   const results = SO.results==null ? '' : SO.results.length ? `<div class="so-list">${SO.results.map(u=>{
       const rel = !d ? '' : d.friends.some(f=>f.user===u.user) ? 'friend' : d.outgoing.some(o=>o.user===u.user) ? 'asked' : d.incoming.some(o=>o.user===u.user) ? 'asking' : '';
-      return `<div class="so-row">${who(u.user, u.name)}
+      return `<div class="so-row">${who(u.user, u.name, u.emoji)}
         <button class="btn sm ghost" data-act="souser" data-u="${esc(u.user)}">View</button>
         ${rel==='friend' ? '<span class="tiny muted">Friends</span>' : rel==='asked' ? '<span class="tiny muted">Asked</span>'
           : `<button class="btn sm" data-act="sorequest" data-u="${esc(u.user)}" ${busy('request',u.user)} ${d && d.friends.length>=FRIENDS_MAX?'disabled':''}>${rel==='asking'?'Accept':'Add friend'}</button>`}</div>`; }).join('')}</div>`
     : `<div class="empty-note">Nobody by that username.</div>`;
   return `${topbar('Social', `<button class="btn sm ghost" data-act="soreload" aria-label="Refresh">↻</button>`)}
   <div class="page stack social-page">
+    ${socialTabsHTML('friends')}
     ${SO.err ? `<div class="acct-err">${esc(SO.err)}</div>` : ''}
     ${inRoom() && isHost() && ON.lobby ? `<div class="callout">You're hosting room <b>${esc(ON.code)}</b> — tap Invite next to a friend and it pops up on their screen.</div>` : ''}
     ${invites}${incoming}
@@ -8756,7 +8913,7 @@ function viewSocial(){
     ${outgoing}
     <div class="section-head"><h3>Find players</h3></div>
     <input type="search" data-so="q" placeholder="Search by username" value="${esc(SO.q)}" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Search by username">
-    ${results}
+    ${SO.searchErr ? `<div class="acct-err">${esc(SO.searchErr)}</div>` : results}
   </div>`;
 }
 function viewPlayer(){
@@ -8779,7 +8936,7 @@ function viewPlayer(){
   return `${topbar(esc(p.name), back)}
   <div class="page stack profile-page">
     <div class="card-panel acct-card in"><div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap">
-      <span class="acct-badge" aria-hidden="true">${esc(p.name.charAt(0).toUpperCase())}</span>
+      ${avatarHTML(p.emoji, p.name)}
       <div class="acct-who" style="flex:1"><b>${esc(p.name)}</b><span>@${esc(p.username)}</span></div>${relBtn}</div></div>
     <div class="pf-tiles">${tile(r.played,'played')}${tile(r.wins,'wins','win')}${tile(r.losses,'losses','loss')}${tile(r.draws,'draws')}${tile(r.played?Math.round(100*r.wins/r.played)+'%':'—','win rate')}</div>
     <div class="section-head"><h3>Match history</h3><p>${p.games.length ? 'latest '+p.games.length+' · tap for the log, replay and comments' : ''}</p></div>
@@ -8832,7 +8989,7 @@ function playerGameSheetHTML(){
 function statsFrom(games){
   const withStats = games.filter(g=>g.stats && g.stats.v);
   const cards = {}, planets = {};
-  games.forEach(g=>(g.rows||[]).forEach(r=>{ const p = planets[r.name] || (planets[r.name] = {name:r.name, seen:0, won:0, slots:[]}); p.seen++; if(r.winner===g.seat) p.won++; }));
+  games.forEach(g=>(g.rows||[]).forEach(r=>{ const p = planets[r.name] || (planets[r.name] = {name:r.name, seen:0, won:0, rounds:0, slots:[]}); p.seen++; if(r.winner===g.seat) p.won++; }));
   let roundsN = 0, powerRoundSum = 0, powerGameSum = 0, bestRound = null, bestGame = null;
   let drawGameSum = 0, bestDrawRound = null, bestDrawGame = null;
   withStats.forEach(g=>{
@@ -8846,12 +9003,14 @@ function statsFrom(games){
       if(c.pw!=null){ k.onBoard++; if(c.pw) k.planetWins++; }
     });
     (st.slots||[]).forEach(pl=>{
-      const p = planets[pl.p] || (planets[pl.p] = {name:pl.p, seen:0, won:0, slots:[]});
+      const p = planets[pl.p] || (planets[pl.p] = {name:pl.p, seen:0, won:0, rounds:0, slots:[]});
+      const rds = g.rounds || 6;
+      p.rounds += rds;
       pl.s.forEach((sl,i)=>{
-        const key = sl.c+'→'+sl.r;
+        const key = sl.c+'\u2192'+sl.r;
         let row = p.slots.find(x=>x.key===key && x.i===i);
-        if(!row){ row = {key, i, c:sl.c, r:sl.r, o:0, m:0}; p.slots.push(row); }
-        row.o += sl.o; row.m += sl.m;
+        if(!row){ row = {key, i, c:sl.c, r:sl.r, m:0, rounds:0}; p.slots.push(row); }
+        row.m += sl.m; row.rounds += rds;        // rounds it paid you, out of every round it was in play
       });
     });
     const pw = st.power||[];
@@ -8876,19 +9035,21 @@ function statsFrom(games){
 }
 const pct = (a,b) => b ? Math.round(100*a/b)+'%' : '—';
 const num1 = v => v==null ? '—' : (Math.round(v*10)/10).toString();
-function statsHTML(){
-  const S = statsFrom(PROFILE.games);
-  if(!S.total) return `<div class="empty-note">Finish a game and your numbers start here.</div>`;
+function statsHTML(S, opt){
+  opt = opt || {};
+  S = S || statsFrom(PROFILE.games);
+  const all = !!opt.global;
+  if(!S.total) return `<div class="empty-note">${all ? 'No games have been recorded on the server yet.' : 'Finish a game and your numbers start here.'}</div>`;
   if(!S.n) return `<div class="empty-note">These games were played before stats were kept. Finish a new one and your numbers start here.</div>`;
-  const sortBy = UI.stSort || 'games';
+  const sortBy = (all ? UI.stSortG : UI.stSort) || 'games';
   const keyF = {games:c=>c.games, win:c=>c.games ? c.gameWins/c.games : -1, planet:c=>c.onBoard ? c.planetWins/c.onBoard : -1, name:c=>0}[sortBy];
   const cards = S.cards.slice().sort((a,b)=> sortBy==='name' ? a.name.localeCompare(b.name) : (keyF(b)-keyF(a)) || (b.games-a.games) || a.name.localeCompare(b.name));
-  const showAll = UI.stAll;
-  const sortChip = (k,l) => `<button class="chip ${sortBy===k?'on':''}" data-act="stsort" data-v="${k}">${l}</button>`;
-  const rec = (label, r, unit) => `<div class="st-rec"><b>${r ? r.v : '—'}</b><span>${label}</span>${r ? `<i>${r.rd?'round '+r.rd+' · ':''}${whenText2(r.at)}</i>` : ''}</div>`;
+  const showAll = all ? UI.stAllG : UI.stAll;
+  const sortChip = (k,l) => `<button class="chip ${sortBy===k?'on':''}" data-act="stsort" data-v="${k}" data-g="${all?1:0}">${l}</button>`;
+  const rec = (label, r, unit) => `<div class="st-rec"><b>${r ? r.v : '\u2014'}</b><span>${label}</span>${r ? `<i>${r.user?'@'+esc(r.user)+' · ':''}${r.rd?'round '+r.rd+' · ':''}${whenText2(r.at)}</i>` : ''}</div>`;
   const bar = (frac) => `<span class="st-bar" aria-hidden="true"><i style="width:${Math.round(100*Math.max(0,Math.min(1,frac||0)))}%"></i></span>`;
   return `
-  <p class="tiny muted" style="margin:0">From ${S.n} game${S.n===1?'':'s'} with stats${S.total>S.n?` (${S.total-S.n} older one${S.total-S.n===1?'':'s'} only count toward planets seen)`:''}. Everything is from your seat.</p>
+  <p class="tiny muted" style="margin:0">${all ? `Every game any player has recorded with an account: ${S.n}. Each player\u2019s own seat counts, so an online game between two accounts counts twice.` : `From ${S.n} game${S.n===1?'':'s'} with stats${S.total>S.n?` (${S.total-S.n} older one${S.total-S.n===1?'':'s'} only count toward planets seen)`:''}. Everything is from your seat.`}</p>
 
   <div class="section-head"><h3>\u{1F4AA} Power</h3></div>
   <div class="st-grid">
@@ -8905,10 +9066,10 @@ function statsHTML(){
     ${rec('most in one game', S.draws.bestGame)}
   </div>
 
-  <div class="section-head"><h3>Cards you played</h3><p>${cards.length} different</p></div>
+  <div class="section-head"><h3>${all?'Cards played':'Cards you played'}</h3><p>${cards.length} different</p></div>
   <div class="row" style="gap:6px;flex-wrap:wrap">${sortChip('games','Most played')}${sortChip('win','Game win %')}${sortChip('planet','Planet win %')}${sortChip('name','Name')}</div>
   <div class="st-table st-cards" role="table">
-    <div class="st-tr st-th" role="row"><span role="columnheader">Card</span><span role="columnheader" title="Share of your games it was played in">Play rate</span><span role="columnheader" title="Games won when you played it">Game win</span><span role="columnheader" title="When it ended the game on a planet: how often you won that planet">Planet win</span></div>
+    <div class="st-tr st-th" role="row"><span role="columnheader">Card</span><span role="columnheader" title="Share of games it was played in">Play rate</span><span role="columnheader" title="Games won when you played it">Game win</span><span role="columnheader" title="When it ended the game on a planet: how often you won that planet">Planet win</span></div>
     ${(showAll ? cards : cards.slice(0, 12)).map(c=>`<div class="st-tr" role="row">
       <span class="st-nm" role="cell">${esc(c.name)}<small>${c.plays} play${c.plays===1?'':'s'}</small></span>
       <span role="cell">${pct(c.games, S.n)}${bar(c.games/S.n)}</span>
@@ -8916,16 +9077,16 @@ function statsHTML(){
       <span role="cell">${c.onBoard ? pct(c.planetWins, c.onBoard) : '—'}${bar(c.onBoard ? c.planetWins/c.onBoard : 0)}</span>
     </div>`).join('')}
   </div>
-  ${cards.length > 12 ? `<button class="btn sm ghost" data-act="stall" style="align-self:flex-start">${showAll ? 'Show fewer' : `Show all ${cards.length}`}</button>` : ''}
+  ${cards.length > 12 ? `<button class="btn sm ghost" data-act="stall" data-g="${all?1:0}" style="align-self:flex-start">${showAll ? 'Show fewer' : `Show all ${cards.length}`}</button>` : ''}
 
-  <div class="section-head"><h3>Planets</h3><p>how often each came up, and how often your slots there paid</p></div>
+  <div class="section-head"><h3>Planets</h3><p>how often each came up, and for each slot, the rounds it paid out of every round it was in play</p></div>
   <div class="st-planets">${S.planets.sort((a,b)=>b.seen-a.seen || a.name.localeCompare(b.name)).map(p=>`
     <div class="st-planet card-panel">
       <div class="row" style="gap:8px;align-items:baseline"><b style="flex:1">${esc(p.name)}</b><span class="tiny muted">seen ${p.seen}× · won ${pct(p.won, p.seen)}</span></div>
-      ${p.slots.length ? `<div class="st-slots">${p.slots.sort((a,b)=>a.i-b.i).map(sl=>`<div class="st-slot" title="${sl.o} time${sl.o===1?'':'s'} a card of yours was there when rewards were checked">
+      ${p.slots.length ? `<div class="st-slots">${p.slots.sort((a,b)=>a.i-b.i).map(sl=>`<div class="st-slot" title="Paid ${sl.m} of the ${sl.rounds} rounds it was in play">
           <span class="st-cond">${esc(sl.c)}<br><b>${esc(sl.r)}</b></span>
-          <span class="st-pct">${sl.o ? pct(sl.m, sl.o) : '—'}</span>${bar(sl.o ? sl.m/sl.o : 0)}
-          <small>${sl.m} of ${sl.o}</small></div>`).join('')}</div>` : `<div class="tiny muted">No slot data yet.</div>`}
+          <span class="st-pct">${sl.rounds ? pct(sl.m, sl.rounds) : '\u2014'}</span>${bar(sl.rounds ? sl.m/sl.rounds : 0)}
+          <small>${sl.m} of ${sl.rounds} rounds</small></div>`).join('')}</div>` : `<div class="tiny muted">No slot data yet.</div>`}
     </div>`).join('')}</div>`;
 }
 
@@ -8942,12 +9103,14 @@ function viewProfile(){
       <span class="pf-score" aria-label="Planets: ${scoreLine(g)}">${scoreLine(g)}<small>planets</small></span>
     </button>`;
   }).join('');
-  return `${topbar('Profile')}
+  return `${topbar('Social')}
   <div class="page stack profile-page">
+    ${socialTabsHTML('profile')}
     ${accountCardHTML()}
     <label class="field"><span>Your name</span>
       <input data-pf="name" maxlength="24" placeholder="Your name in every game" value="${esc(PROFILE.name||'')}" autocomplete="nickname"></label>
     <p class="tiny muted" style="margin:-6px 0 0">Fills in your seat in games on this device, and is what everyone sees online.</p>
+    ${emojiPickerHTML()}
     <div class="pf-tiles">
       ${tile(st.played, 'played')}${tile(st.wins, 'wins', 'win')}${tile(st.losses, 'losses', 'loss')}${tile(st.draws, 'draws')}
       ${tile(st.rate==null ? '—' : st.rate+'%', 'win rate')}
@@ -8989,6 +9152,7 @@ function historySheetHTML(){
   </div>`;
 }
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
+document.addEventListener('change', e=>{ if(e.target.dataset && e.target.dataset.pf==='emoji'){ setProfileEmoji(e.target.value); render(); } });
 document.addEventListener('input', e=>{ const k = e.target.dataset && e.target.dataset.so; if(!k) return;
   if(k==='q') soSearch(e.target.value); else if(k==='draft') SO.draft = e.target.value; });
 document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.so==='draft'){ e.preventDefault(); soComment(); } });
@@ -9055,7 +9219,11 @@ async function syncAccount(){
     const server = new Set(r.games.map(g=>g.id));
     const waiting = PROFILE.games.filter(g=>(PROFILE.pending||[]).includes(g.id) && !server.has(g.id));
     PROFILE.games = waiting.concat(r.games.map(g=>{ if(logs[g.id]) g.log = logs[g.id]; if(reps[g.id]) g.replay = reps[g.id]; return g; })).sort((a,b)=>(b.at||0)-(a.at||0));
-    if(!PROFILE.nameDirty) PROFILE.name = r.name;
+    if(!PROFILE.nameDirty){
+      PROFILE.name = r.name;
+      if(r.emoji) PROFILE.emoji = r.emoji;
+      else if(PROFILE.emoji) PROFILE.nameDirty = true;        // this browser had one before the account did: send it up
+    }
     PROFILE.user = r.username;
     AC.status = 'synced';
     saveProfile();
@@ -9072,58 +9240,514 @@ async function syncAccount(){
    you win. The coach says what to do next and the board points at it.
    =================================================================== */
 const TUT = { saved:null, step:0, page:0, active:false };
+/* The lesson's cards and planets, copied from the shipped library (abilities,
+   numbers and emoji as they are there), so later edits to your own library
+   can't change how the lesson plays out. */
 const TUTOR_LIB = {
-  cards: [
-    {id:'t-blade',      name:'Blade',      cost:2, power:4, fx:[], art:E('\u{1F52A}')},
-    {id:'t-ward',       name:'Ward',       cost:2, power:5, fx:[{v:'discard', n:1}], art:E('\u{1F6E1}️')},
-    {id:'t-atlas',      name:'Atlas',      cost:2, power:3, fx:[{v:'draw', n:1}], art:E('\u{1F5FA}️')},
-    {id:'t-battleaxe',  name:'Battleaxe',  cost:4, power:8, fx:[], art:E('\u{1FA93}')},
-    {id:'t-sahel',      name:'Sahel',      cost:4, power:7, rarity:'exotic', fx:[{v:'move', dest:'here', target:{player:'choose', here:false, rule:'choice'}}], art:E('\u{1F3DC}️')},
-    {id:'t-aqitan',     name:'Aqitan',     cost:3, power:5, rarity:'exotic', fx:[{v:'givePower', t:'self', n:2, when:'activate', actCost:1, actUses:1}], art:E('\u{1F3E6}')},
-    {id:'t-starfall',   name:'Starfall',   cost:2, power:4, fx:[{v:'create', tok:'t-stardust', n:1}], art:E('\u{1F320}')},
-    {id:'t-lightspark', name:'Lightspark', cost:3, power:5, fx:[{v:'givePower', n:2, target:{player:'self', here:false, rule:'next'}}], art:E('\u{1F4AB}')},
-    {id:'t-ambrosia',   name:'Ambrosia',   cost:2, power:1, fx:[{v:'givePower', n:2, t:'alliesHere'}], art:E('\u{1F36F}')},
-    {id:'t-torch',      name:'Torch',      cost:2, power:2, fx:[{v:'burn', n:2, target:{player:'choose', here:true, rule:'choice'}}], art:E('\u{1F525}')},
-    {id:'t-amulet',     name:'Amulet of Cochrane', cost:5, power:6, rarity:'exotic', fx:[{v:'summon', at:'choice', from:'grave', pick:{owner:'any', rule:'strongest'}}], art:E('\u{1F9FF}')},
-    {id:'t-broadsword', name:'Broadsword', cost:3, power:6, fx:[], art:E('⚔️')},
-    {id:'t-dexter',     name:'Dexter',     cost:2, power:5, fx:[], art:E('\u{1FAF1}')},
-    {id:'t-lunariam',   name:'Lunariam',   cost:4, power:5, fx:[], art:E('\u{1F319}')},
-    {id:'t-dust',       name:'Stardust',   cost:1, power:3, fx:[], art:E('⭐')}
-  ],
-  tokens: [ {id:'t-stardust', name:'Stardust', cost:1, power:3, fx:[], art:E('⭐'), token:true} ],
-  planets: [
-    {id:'tp-verdant', name:'Verdant Shelf', art:E('\u{1F7E2}'), hue:'#4fd6b0', slots:[
-      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:2}},
-      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}},
-      {cond:{stat:'power', op:'>=', val:6}, rew:{type:'energy', amount:1}}]},
-    {id:'tp-silt', name:'Silt Hollow', art:E('\u{1F7E4}'), hue:'#c9a36a', slots:[
-      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:1}},
-      {cond:{stat:'cost', op:'>=', val:3}, rew:{type:'energy', amount:1}},
-      {cond:{stat:'any'}, rew:{type:'energy', amount:1}}]},
-    {id:'tp-ember', name:'Ember Ridge', art:E('\u{1F7E0}'), hue:'#f2856c', slots:[
-      {cond:{stat:'cost', op:'>=', val:4}, rew:{type:'energy', amount:2}},
-      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}},
-      {cond:{stat:'power', op:'<=', val:2}, rew:{type:'energy', amount:1}}]},
-    {id:'tp-ashen', name:'Ashen Gate', art:E('\u{1F7E3}'), hue:'#a482f0', slots:[
-      {cond:{stat:'cost', op:'<=', val:2}, rew:{type:'energy', amount:1}},
-      {cond:{stat:'cost', op:'>=', val:5}, rew:{type:'energy', amount:2}},
-      {cond:{stat:'power', op:'>=', val:5}, rew:{type:'energy', amount:1}}]}
-  ],
-  decks: [{id:'t-deck', name:'Tutorial', cards:[]}]
+ "cards": [
+  {
+   "id": "card-3",
+   "name": "Blade",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "🗡"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-4",
+   "name": "Broadsword",
+   "cost": 3,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🦯"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-6",
+   "name": "Battleaxe",
+   "cost": 4,
+   "power": 8,
+   "art": {
+    "t": "emoji",
+    "v": "🪓"
+   },
+   "fx": [],
+   "token": false
+  },
+  {
+   "id": "card-8",
+   "name": "Ambrosia",
+   "cost": 2,
+   "power": 1,
+   "art": {
+    "t": "emoji",
+    "v": "🧪"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "alliesHere",
+     "n": 2
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-10",
+   "name": "Atlas",
+   "cost": 2,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "🗺️"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-14",
+   "name": "Ward",
+   "cost": 2,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "💂"
+   },
+   "fx": [
+    {
+     "v": "discard",
+     "t": "self",
+     "n": 1
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-18",
+   "name": "Starfall",
+   "cost": 2,
+   "power": 4,
+   "art": {
+    "t": "emoji",
+    "v": "⭐"
+   },
+   "fx": [
+    {
+     "v": "create",
+     "t": "self",
+     "n": 1,
+     "tok": "stardust"
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-11",
+   "name": "Sahel",
+   "cost": 4,
+   "power": 7,
+   "art": {
+    "t": "emoji",
+    "v": "🪝"
+   },
+   "fx": [
+    {
+     "v": "move",
+     "dest": "here",
+     "target": {
+      "player": "choose",
+      "here": false,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-24",
+   "name": "Amulet of Cochrane",
+   "cost": 5,
+   "power": 6,
+   "art": {
+    "t": "emoji",
+    "v": "🧿"
+   },
+   "fx": [
+    {
+     "v": "summon",
+     "from": "grave",
+     "pick": {
+      "owner": "any",
+      "rule": "strongest"
+     }
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-25",
+   "name": "Lightspark",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "💡"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "target": {
+      "player": "self",
+      "here": false,
+      "rule": "next"
+     },
+     "n": 2
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-30",
+   "name": "Torch",
+   "cost": 2,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🔥"
+   },
+   "fx": [
+    {
+     "v": "burn",
+     "n": 2,
+     "target": {
+      "player": "choose",
+      "here": true,
+      "rule": "choice"
+     }
+    }
+   ],
+   "token": false
+  },
+  {
+   "id": "card-35",
+   "name": "Aqitan",
+   "cost": 3,
+   "power": 5,
+   "art": {
+    "t": "emoji",
+    "v": "🏦"
+   },
+   "fx": [
+    {
+     "v": "givePower",
+     "t": "self",
+     "n": 2,
+     "when": "activate",
+     "actCost": 1
+    }
+   ],
+   "token": false,
+   "rarity": "exotic"
+  },
+  {
+   "id": "card-40",
+   "name": "Amphora",
+   "cost": 1,
+   "power": 2,
+   "art": {
+    "t": "emoji",
+    "v": "🏺"
+   },
+   "fx": [
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "discarded",
+     "from": "deck"
+    },
+    {
+     "v": "draw",
+     "n": 1,
+     "when": "destroyed",
+     "from": "deck"
+    }
+   ],
+   "token": false
+  }
+ ],
+ "tokens": [
+  {
+   "id": "stardust",
+   "name": "Stardust",
+   "cost": 1,
+   "power": 3,
+   "art": {
+    "t": "emoji",
+    "v": "⭐"
+   },
+   "fx": [],
+   "token": true
+  }
+ ],
+ "planets": [
+  {
+   "id": "verdance",
+   "name": "Dirge Winds",
+   "art": {
+    "t": "emoji",
+    "v": "🟢"
+   },
+   "hue": "#4fd6b0",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 6
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "<=",
+      "val": 2
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 8
+     },
+     "rew": {
+      "type": "draw",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "ashfall",
+   "name": "Ashfall Rim",
+   "art": {
+    "t": "emoji",
+    "v": "🟠"
+   },
+   "hue": "#f2856c",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": "<=",
+      "val": 2
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 8
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "shoal",
+   "name": "The Shoal",
+   "art": {
+    "t": "emoji",
+    "v": "🔵"
+   },
+   "hue": "#5cbfe4",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 3
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "hollow",
+   "name": "Hallow Moon",
+   "art": {
+    "t": "emoji",
+    "v": "⚪"
+   },
+   "hue": "#c9d6cf",
+   "slots": [
+    {
+     "cond": {
+      "stat": "cost",
+      "op": ">=",
+      "val": 4
+     },
+     "rew": {
+      "type": "draw",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 9
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": ">=",
+      "val": 6
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "cradle",
+   "name": "Oasis",
+   "art": {
+    "t": "emoji",
+    "v": "🥚"
+   },
+   "hue": "#8fd6a0",
+   "slots": [
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    },
+    {
+     "cond": {
+      "stat": "winner",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 2
+     }
+    },
+    {
+     "cond": {
+      "stat": "power",
+      "op": "<=",
+      "val": 4
+     },
+     "rew": {
+      "type": "energy",
+      "amount": 1
+     }
+    }
+   ]
+  }
+ ],
+ "decks": [
+  {
+   "id": "t-deck",
+   "name": "Tutorial",
+   "cards": []
+  }
+ ]
 };
 /* Draw order, first card first. The first five are the opening hand. */
 const TUTOR_STACKS = [
-  ['t-blade','t-ward','t-atlas','t-battleaxe','t-sahel',  't-aqitan','t-starfall','t-lightspark','t-ambrosia','t-torch','t-amulet','t-broadsword','t-broadsword'],
-  ['t-dust','t-dexter','t-blade','t-broadsword','t-broadsword',  't-battleaxe','t-lunariam','t-dexter','t-lunariam','t-broadsword','t-blade','t-blade']
+  ['card-3','card-14','card-10','card-6','card-11','card-35','card-18','card-25','card-8','card-30','card-24','card-4','card-4'],
+  ['card-40','card-3','card-4','card-4','card-6','card-6','card-4','card-3','card-6','card-4','card-3','card-3','card-4','card-3']
 ];
-/* The opponent's moves, round by round: [card, planet, slot]. */
+/* The opponent's moves, round by round: [card, planet, slot]. Planets in
+   order: Dirge Winds, Ashfall Rim, The Shoal, Hallow Moon, Oasis. */
 const TUTOR_ENEMY = {
-  1:[['Stardust',1,0]],
-  2:[['Dexter',3,2],['Blade',0,0]],
-  3:[['Broadsword',0,1],['Broadsword',1,1]],
-  4:[['Battleaxe',0,2],['Lunariam',2,0]],
-  5:[['Dexter',1,2],['Broadsword',3,0]],
-  6:[['Lunariam',3,1]]
+  1:[['Amphora',1,1]],
+  2:[['Blade',0,1],['Broadsword',0,0]],
+  3:[['Battleaxe',1,2],['Broadsword',4,1]],
+  4:[['Battleaxe',0,2],['Broadsword',3,2],['Blade',4,0]],
+  5:[['Battleaxe',2,0],['Broadsword',2,1]],
+  6:[['Blade',2,2]]
 };
 function tutorBotAct(p, send){
   if(G.phase==='placement'){
@@ -9150,7 +9774,7 @@ function startTutorGame(){
   LIB.settings = Object.assign({}, TUT.saved.settings, {hide:false, turnTimer:0, turnTimerCustom:false});
   RP_LIB_SWAPPED = true;
   UI.screen = 'game'; UI.sheet = null;
-  newGame({players:2, kinds:['human','bot'], names:[profileName()||'Player', 'Rival'], planets:4, rounds:6,
+  newGame({players:2, kinds:['human','bot'], names:[profileName()||'Player', 'Rival'], planets:5, rounds:6,
            tutorial:true, stacks:TUTOR_STACKS, planetOrder:TUTOR_LIB.planets.map(p=>p.id), placement:'turns', sandbox:false, online:false, mulligan:false});
   G.gameId = 'tutorial';
 }
@@ -9162,58 +9786,54 @@ function stopTutorGame(){
    A step either explains something (info, with a Next button) or asks for
    one move. Only that move is accepted; anything else gets a gentle nudge. */
 const tc = n => ({card:n});
+/* Generated from the coach script (the "Territory tutorial — coach script" doc). Each step has an id, so edited wording maps straight back. */
 const TUTOR_STEPS = [
-  {info:true, at:{r:1}, t:`<b>Welcome to the table.</b> Four planets, six rounds. Each planet has three slots for you (the row nearest you) and three for your Rival. Whoever has the most \u{1F4AA} Power on a planet at the end wins it — and whoever wins the most planets wins the game.`},
-  {info:true, at:{r:1}, t:`Under each slot is its <b>Condition → Reward</b>. <b>⚡≤2 → +2⚡</b> means: if the card sitting here costs 2 Energy or less, you get +2 Energy at the start of every round. Your slots and your Rival’s are identical.`},
-  {do:{t:'place', card:'Blade', p:0, s:0}, t:`You have <b>2⚡</b>. Drag <b>Blade</b> (2⚡, 4\u{1F4AA}) onto Verdant Shelf’s <b>first slot</b> — ⚡≤2 → +2⚡. Blade costs 2, so it satisfies the condition. (Or tap Blade, then tap the slot.)`},
-  {do:{t:'lock'}, t:`Cards go down <b>face down</b>, and you only need enough Energy to cover them — you pay when they’re turned over. That’s all you can afford: tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Blade'}, t:`<b>Reveal phase.</b> You reveal first this round. Tap <b>Blade</b> to turn it over: you pay its 2⚡ now, and any ability it has goes off.`},
-  {do:{t:'end'}, t:`Everything’s face up. Tap <b>End turn</b> and watch your Rival reveal.`},
-
-  {info:true, at:{r:2}, t:`<b>Round 2.</b> Everyone drew a card and gained 2⚡. Then every slot was checked: Blade meets ⚡≤2, so Verdant Shelf paid you <b>+2⚡</b> — the green outline shows it. You have <b>4⚡</b>. The Rival’s Stardust earned them +1⚡ on Silt Hollow the same way.`},
-  {do:{t:'place', card:'Ward', p:0, s:1}, t:`Put <b>Ward</b> (2⚡, 5\u{1F4AA}) in Verdant Shelf’s <b>second slot</b> — \u{1F4AA}≥5 → +1⚡. Its ability makes you <b>discard</b> a card: we’ll use that to throw away something expensive.`},
-  {do:{t:'place', card:'Atlas', p:1, s:0}, t:`Now <b>Atlas</b> (2⚡) on Silt Hollow’s <b>first slot</b> — ⚡≤2 → +1⚡. Atlas draws a card when revealed.`},
-  {do:{t:'lock'}, t:`4⚡ of cards for 4⚡. Tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Ward'}, t:`You choose the order cards turn over. Flip <b>Ward</b> first.`},
-  {do:{t:'discard', card:'Battleaxe'}, t:`Ward: discard a card. Choose <b>Battleaxe</b> — 8\u{1F4AA}, but 4⚡ is too much for now. It goes to the graveyard face up… remember it.`},
-  {do:{t:'flip', card:'Atlas'}, t:`Flip <b>Atlas</b> to draw a card.`},
-  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
-
-  {info:true, at:{r:3}, t:`<b>Round 3:</b> +2⚡ for the round and +4⚡ from three satisfied slots — <b>6⚡</b>. Income snowballs: the earlier a slot is satisfied, the more it pays.`},
-  {do:{t:'place', card:'Aqitan', p:1, s:1}, t:`<b>Aqitan</b> (3⚡) goes on Silt Hollow’s <b>middle slot</b> — ⚡≥3 → +1⚡. Its ability is <b>activated</b> (⚙): from next round you can pay 1⚡ for +2\u{1F4AA}, once.`},
-  {do:{t:'place', card:'Starfall', p:1, s:2}, t:`<b>Starfall</b> in the <b>last slot</b> — Any card → +1⚡. When it’s revealed it <b>creates</b> a Stardust token in your hand.`},
-  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Aqitan'}, t:`Flip <b>Aqitan</b>.`},
-  {do:{t:'flip', card:'Starfall'}, t:`Flip <b>Starfall</b> — a Stardust lands in your hand.`},
-  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
-
-  {info:true, at:{r:4}, t:`<b>9⚡.</b> Ember Ridge is empty — let’s take it with three cards. And notice the Rival’s <b>Stardust</b> on Silt Hollow: it has paid them +1⚡ every round.`},
-  {do:{t:'place', card:'Lightspark', p:2, s:1}, t:`<b>Lightspark</b> (3⚡, 5\u{1F4AA}) on Ember Ridge’s <b>middle slot</b> — \u{1F4AA}≥5 → +1⚡. It gives the <b>next card you play</b> +2\u{1F4AA}.`},
-  {do:{t:'place', card:'Sahel', p:2, s:0}, t:`<b>Sahel</b> (4⚡, 7\u{1F4AA}) in the <b>first slot</b> — ⚡≥4 → +2⚡. Sahel <b>moves</b> a card from another planet to here.`},
-  {do:{t:'place', card:'Ambrosia', p:2, s:2}, t:`<b>Ambrosia</b> (2⚡, 1\u{1F4AA}) in the <b>last slot</b> — \u{1F4AA}≤2 → +1⚡. It gives your other cards here +2\u{1F4AA}.`},
-  {do:{t:'lock'}, t:`Exactly 9⚡. Tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Lightspark'}, t:`Order matters now. Flip <b>Lightspark</b> first, so its +2\u{1F4AA} waits for the next card you flip.`},
-  {do:{t:'flip', card:'Sahel'}, t:`Flip <b>Sahel</b>: it picks up Lightspark’s +2\u{1F4AA}…`},
-  {do:{t:'pick', card:'Stardust'}, t:`…and moves an enemy card here. Choose the Rival’s <b>Stardust</b> on Silt Hollow: off that slot, it can’t earn them Energy any more.`},
-  {do:{t:'flip', card:'Ambrosia'}, t:`Flip <b>Ambrosia</b>: +2\u{1F4AA} to Sahel and Lightspark. Bonus Power stays on a card wherever it goes.`},
-  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
-
-  {info:true, at:{r:5}, t:`No Energy for the Rival from Stardust this time. Their <b>Dexter</b> on Ashen Gate has exactly 5\u{1F4AA} — just enough for \u{1F4AA}≥5 → +1⚡. Let’s fix that. You have <b>12⚡</b>.`},
-  {do:{t:'place', card:'Torch', p:3, s:0}, t:`<b>Torch</b> (2⚡) on Ashen Gate’s <b>first slot</b> — ⚡≤2 → +1⚡. It <b>burns</b> 2\u{1F4AA} off an enemy card here.`},
-  {do:{t:'place', card:'Amulet of Cochrane', p:3, s:1}, t:`<b>Amulet of Cochrane</b> (5⚡) in the <b>middle slot</b> — ⚡≥5 → +2⚡. It <b>summons</b> the strongest card in the graveyard.`},
-  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Torch'}, t:`Flip <b>Torch</b>: Dexter drops to 3\u{1F4AA} and won’t meet its condition next round.`},
-  {do:{t:'flip', card:'Amulet of Cochrane'}, t:`Flip the <b>Amulet</b>…`},
-  {do:{t:'slot', p:3, s:2}, t:`…and <b>Battleaxe</b> comes back from the graveyard. Summon it into your <b>last slot on Ashen Gate</b>. A summoned card arrives face up and costs nothing.`},
-  {do:{t:'activate', card:'Aqitan'}, t:`You still have Energy. Tap <b>Aqitan</b> on Silt Hollow to use its ability: 1⚡ for +2\u{1F4AA}.`},
-  {do:{t:'end'}, t:`Tap <b>End turn</b>.`},
-
-  {info:true, at:{r:6}, t:`<b>Final round.</b> Dexter failed \u{1F4AA}≥5, so Ashen Gate paid the Rival nothing — but your three cards there all paid you.`},
-  {do:{t:'place', card:'Stardust', p:0, s:2}, t:`Play your <b>Stardust</b> on Verdant Shelf’s <b>last slot</b>. At the end every point of Power counts.`},
-  {do:{t:'lock'}, t:`Tap <b>Lock in</b>.`},
-  {do:{t:'flip', card:'Stardust'}, t:`Flip <b>Stardust</b>.`},
-  {do:{t:'end'}, t:`Tap <b>End turn</b>. Then the Rival reveals and the planets are counted.`}
+  {id:'1.1', info:true, at:{r:1}, t:`<b>Welcome to the game, rookie.</b> I've spent a long time doing this so you should listen closely. We've got five planets ripe for the taking, but we only have six rounds to stake our claim. Each planet has three key locations, and we can deploy our cards to harvest resources from them. Whoever has the most 💪 Power on a planet at the end wins it — and whoever wins the most planets wins the game.`},
+  {id:'1.2', info:true, at:{r:1}, t:`The name of the game is to earn as much Energy as we can, then spend it on powerful card combos. We earn Energy through the slots: <b>Condition → Reward</b>. On Dirge Winds, <b>⚡≤2 → +2⚡</b>- as long as the card we put there satisfies the <b>Condition</b> (costs 2 <b>⚡</b>Energy or less), we can earn the <b>Reward</b> (+2 <b>⚡</b>Energy) next round. Your slots and your Rival's are identical.`},
+  {id:'1.3', do:{"t": "place", "card": "Blade", "p": 0, "s": 1}, t:`You have <b>2⚡</b>. Drag <b>Blade</b> (2⚡, 4💪) onto Dirge Winds' <b>middle slot</b> — ⚡≤2 → +2⚡. Blade costs 2, so it satisfies the condition. (Or tap Blade, then tap the slot.)`},
+  {id:'1.4', do:{"t": "lock"}, t:`Cards go down <b>face down</b>. You can play as many cards as you want in a turn, but you need enough Energy to cover their cost. That's all you can afford: tap <b>Lock in</b>.`},
+  {id:'1.5', do:{"t": "flip", "card": "Blade"}, t:`<b>Reveal phase.</b> You reveal first this round. Tap <b>Blade</b> to turn it over: you pay its 2⚡ now, and any ability it has goes off.`},
+  {id:'1.6', do:{"t": "end"}, t:`Tap <b>End turn</b> and watch your Rival reveal.`},
+  {id:'2.1', info:true, at:{r:2}, t:`<b>Round 2.</b> Everyone drew a card and gained 2⚡. Then every slot was checked: Blade meets ⚡≤2, so Dirge Winds paid you <b>+2⚡</b>, putting you at <b>4⚡</b> total. Your Rival's Amphora did the same on Ashfall Rim's 💪≤3 → +2⚡ slot, so they have 5 <b>⚡</b> total.`},
+  {id:'2.2', do:{"t": "place", "card": "Ward", "p": 1, "s": 0}, t:`Put <b>Ward</b> (2⚡, 5💪) in Ashfall Rim's <b>first slot</b> — ⚡≤2 → +1⚡. Its ability makes you <b>discard</b> a card.`},
+  {id:'2.3', do:{"t": "place", "card": "Atlas", "p": 4, "s": 0}, t:`Now <b>Atlas</b> (2⚡, 3💪) on Oasis' <b>first slot</b> — 💪≤4 → +1⚡. Atlas draws a card when it's revealed.`},
+  {id:'2.4', do:{"t": "lock"}, t:`4⚡ of cards for 4⚡. Tap <b>Lock in</b>.`},
+  {id:'2.5', do:{"t": "flip", "card": "Ward"}, t:`You choose the order your cards turn over. Flip <b>Ward</b> first.`},
+  {id:'2.6', do:{"t": "discard", "card": "Battleaxe"}, t:`Ward discards a card. Choose <b>Battleaxe</b> — it sets us up for a future play. It goes to the graveyard face up.`},
+  {id:'2.7', do:{"t": "flip", "card": "Atlas"}, t:`Flip <b>Atlas</b> to draw a card.`},
+  {id:'2.8', do:{"t": "end"}, t:`Tap <b>End turn</b>.`},
+  {id:'3.1', info:true, at:{r:3}, t:`<b>Round 3:</b> +2⚡ for the round and +4⚡ from three satisfied slots — <b>6⚡</b>. Income snowballs: the earlier a slot is satisfied, the more it pays.`},
+  {id:'3.2', do:{"t": "place", "card": "Aqitan", "p": 2, "s": 0}, t:`Let's send <b>Aqitan</b> (3⚡, 5💪) to The Shoal's <b>first slot</b> — ⚡≥3 → +1⚡. Its ability is <b>activated</b> (⚙): starting next round, you can tap it once in the Reveal phase and pay 1⚡ for an extra +2💪.`},
+  {id:'3.3', do:{"t": "place", "card": "Starfall", "p": 4, "s": 2}, t:`Then, <b>Starfall</b> (2⚡, 4💪) to Oasis' <b>last slot</b> — 💪≤4 → +1⚡. When it's revealed it <b>creates</b> a Stardust token in your hand.`},
+  {id:'3.4', do:{"t": "lock"}, t:`Tap <b>Lock in</b>.`},
+  {id:'3.5', do:{"t": "flip", "card": "Aqitan"}, t:`Flip <b>Aqitan</b>.`},
+  {id:'3.6', do:{"t": "flip", "card": "Starfall"}, t:`Flip <b>Starfall</b> — a Stardust lands in your hand.`},
+  {id:'3.7', do:{"t": "end"}, t:`Tap <b>End turn</b>.`},
+  {id:'4.1', info:true, at:{r:4}, t:`We've passed the halfway point - time to think about <b>winning</b>. Hallow Moon is empty — let's establish a strong foothold.`},
+  {id:'4.2', do:{"t": "place", "card": "Lightspark", "p": 3, "s": 2}, t:`Our cards can't satisfy all the conditions on Hallow Moon by themselves - but if we play them together, we can get enough Power to do it. <b>Lightspark</b> (3⚡, 5💪) on Hallow Moon's <b>last slot</b> — 💪≥6 → +1⚡. It gives the <b>next card you play</b> +2💪.`},
+  {id:'4.3', do:{"t": "place", "card": "Sahel", "p": 3, "s": 1}, t:`We still have another trick up our sleeve. <b>Sahel</b> (4⚡, 7💪) in the <b>middle slot</b> — 💪≥9 → +2⚡. Sahel <b>moves</b> an enemy card from another planet to here - we can use this to hobble our Rival's income.`},
+  {id:'4.4', do:{"t": "place", "card": "Ambrosia", "p": 3, "s": 0}, t:`<b>Ambrosia</b> (2⚡, 1💪) in the <b>first slot</b>. It doesn't meet the slot condition (⚡≥4), but you can still play any card there. Our other cards will gain +2💪- Bonus Power stays on a card wherever it goes.`},
+  {id:'4.5', do:{"t": "lock"}, t:`Exactly 9⚡. Tap <b>Lock in</b>.`},
+  {id:'4.6', do:{"t": "flip", "card": "Lightspark"}, t:`Order matters now. Flip <b>Lightspark</b> first, so its +2💪 waits for the next card you flip.`},
+  {id:'4.7', do:{"t": "flip", "card": "Sahel"}, t:`Flip <b>Sahel</b>: it picks up Lightspark's +2💪…`},
+  {id:'4.8', do:{"t": "pick", "card": "Amphora"}, t:`…and moves an enemy card here. Choose the Rival's <b>Amphora</b> on <b>Ashfall Rim</b>: now they can't earn +2 <b>⚡</b>Energy from that slot.`},
+  {id:'4.9', do:{"t": "flip", "card": "Ambrosia"}, t:`Flip <b>Ambrosia</b>: +2💪 to Sahel and Lightspark. Now we're earning from two more slots, and our Rival is down one. That will snowball even further in the endgame.`},
+  {id:'4.10', do:{"t": "end"}, t:`Tap <b>End turn</b>.`},
+  {id:'5.1', info:true, at:{r:5}, t:`Let's keep attacking our Rival's income. Their <b>Battleaxe</b> on Ashfall Rim has just enough 💪Power for its slot condition, but we can change that.`},
+  {id:'5.2', do:{"t": "place", "card": "Torch", "p": 1, "s": 1}, t:`<b>Torch</b> (2⚡, 2💪) on Ashfall Rim's <b>middle slot</b> — 💪≤3 → +2⚡. It <b>burns</b> 2💪 off an enemy card here.`},
+  {id:'5.3', do:{"t": "place", "card": "Amulet of Cochrane", "p": 2, "s": 1}, t:`<b>Amulet of Cochrane</b> (5⚡, 6💪) on The Shoal's <b>middle slot</b> — ⚡≥4 → +2⚡. It <b>summons</b> the strongest card in the graveyard onto its planet.`},
+  {id:'5.4', do:{"t": "lock"}, t:`Tap <b>Lock in</b>.`},
+  {id:'5.5', do:{"t": "flip", "card": "Torch"}, t:`Flip <b>Torch</b>: Battleaxe drops to 6💪. It won't meet 💪≥8 next round, and we flip Ashfall Rim 7 to 6.`},
+  {id:'5.6', do:{"t": "flip", "card": "Amulet of Cochrane"}, t:`Flip the <b>Amulet</b> — and we resurrect <b>Battleaxe</b> for free into The Shoal's last slot. That's the real reason we discarded an expensive card. Planning ahead for your final combos is key to maximizing your 💪Power.`},
+  {id:'5.7', do:{"t": "activate", "card": "Aqitan"}, t:`You still have Energy. Tap <b>Aqitan</b> on The Shoal to use its ability: 1⚡ for +2💪.`},
+  {id:'5.8', do:{"t": "end"}, t:`Tap <b>End turn</b>.`},
+  {id:'6.1', info:true, at:{r:6}, t:`<b>Final round.</b> Battleaxe failed 💪≥8, so Ashfall Rim paid the Rival nothing.`},
+  {id:'6.2', do:{"t": "place", "card": "Stardust", "p": 4, "s": 1}, t:`Play your <b>Stardust</b> (1⚡, 3💪) in Oasis' <b>middle slot</b>.`},
+  {id:'6.3', do:{"t": "lock"}, t:`Tap <b>Lock in</b>.`},
+  {id:'6.4', do:{"t": "flip", "card": "Stardust"}, t:`Flip <b>Stardust</b>.`},
+  {id:'6.5', do:{"t": "end"}, t:`Tap <b>End turn</b>. Then the Rival reveals and the planets are counted.`}
 ];
+const TUTOR_RESULT = `You won 3 planets: Ashfall Rim, The Shoal and Hallow Moon. Oasis is a tie, so it counts for nobody. Good looks, rookie - but it won't always be this easy. The ones who make it are the ones who can both plan ahead and think on their feet. Good luck out there.`;
 const tutStep = () => TUT.active && G && G.tutorial ? TUTOR_STEPS[TUT.step] || null : null;
 const tutNamed = (name, where) => {
   const me = G.players[0];
@@ -9302,7 +9922,7 @@ const TUTOR_PAGES = [
     <p>You play cards onto planets. When the sixth round ends, each planet goes to whoever has the <b>most \u{1F4AA} Power</b> there (all their cards added up). A tie on a planet means nobody gets it.</p>
     <p>The player who wins <b>the most planets wins the game</b>. If that’s tied, the most cards left in hand wins; then the most ⚡ Energy left over.</p>`},
   {h:'Cards', b:()=>`
-    <div class="tut-anat">${tutCard('t-ward')}
+    <div class="tut-anat">${tutCard('card-14')}
       <ul class="tut-callouts">
         <li><b class="c-e">⚡ Energy</b> — top left: what it costs to play.</li>
         <li><b class="c-p">\u{1F4AA} Power</b> — top right: what it adds to its planet.</li>
@@ -9312,9 +9932,9 @@ const TUTOR_PAGES = [
     <p>Every round you <b>draw a card</b>. You start with five in hand.</p>`},
   {h:'Planets and card slots', b:()=>`
     <div class="tut-planet" aria-hidden="true">
-      <div class="tp-name"><span class="tut-orb sm" style="--o:#4fd6b0"></span> Verdant Shelf</div>
+      <div class="tp-name"><span class="tut-orb sm" style="--o:#4fd6b0"></span> Dirge Winds</div>
       <div class="tp-row"><span class="tp-slot"></span><span class="tp-slot"></span><span class="tp-slot"></span></div>
-      <div class="tp-row rules">${tutRule({stat:'cost',op:'<=',val:2},{type:'energy',amount:2})}${tutRule({stat:'power',op:'>=',val:5},{type:'energy',amount:1})}${tutRule({stat:'power',op:'>=',val:6},{type:'draw',amount:1})}</div>
+      <div class="tp-row rules">${tutRule({stat:'power',op:'>=',val:6},{type:'energy',amount:1})}${tutRule({stat:'cost',op:'<=',val:2},{type:'energy',amount:2})}${tutRule({stat:'power',op:'>=',val:8},{type:'draw',amount:1})}</div>
       <div class="tp-row"><span class="tp-slot mine"></span><span class="tp-slot mine"></span><span class="tp-slot mine"></span></div>
       <div class="tp-legend"><span>Rival’s slots above</span><span>yours below</span></div>
     </div>
@@ -9326,8 +9946,8 @@ const TUTOR_PAGES = [
     <p>In slots, \u{1F0CF} means a card: <b>+1\u{1F0CF}</b> draws you one.</p>`},
   {h:'Satisfying a condition', b:()=>`
     <div class="tut-cond">${tutRule({stat:'cost',op:'<=',val:2},{type:'energy',amount:2},'big')}
-      <div class="tut-vs">${tutCard('t-blade','ok')}<span class="tut-arrow">✓ Blade costs 2 — it pays +2⚡</span></div>
-      <div class="tut-vs">${tutCard('t-battleaxe','no')}<span class="tut-arrow">✕ Battleaxe costs 4 — it still adds 8\u{1F4AA}, but pays nothing</span></div></div>
+      <div class="tut-vs">${tutCard('card-3','ok')}<span class="tut-arrow">✓ Blade costs 2 — it pays +2⚡</span></div>
+      <div class="tut-vs">${tutCard('card-6','no')}<span class="tut-arrow">✕ Battleaxe costs 4 — it still adds 8\u{1F4AA}, but pays nothing</span></div></div>
     <p>At the <b>start of every round</b>, each card already in a slot is checked against that slot’s condition. If it’s true, you get the reward — every round, for as long as it stays true. In round 1 there’s nothing to check yet.</p>
     <p>A slot that paid this round is outlined in <b style="color:var(--ui-accent)">green</b>.</p>`},
   {h:'A round: Placement, then Reveal', b:()=>`
@@ -9373,6 +9993,7 @@ function viewTutorial(){
   </div>`;
 }
 function tutBegin(){
+  UI.winSeen = null;
   TUT.step = 0; TUT.active = true; TUT.min = false; TUT.scrolled = {};
   startTutorGame();
   render();
@@ -9386,7 +10007,7 @@ function tutLeave(to){
 function tutResultHTML(){
   return `<div class="tut-done card-panel">
     <b>\u{1F393} Tutorial complete</b>
-    <p>You won Silt Hollow, Ember Ridge and Ashen Gate — 3 planets to 1. Ashen Gate came down to Torch and the Amulet: without them it would have been a tie.</p>
+    <p>${TUTOR_RESULT}</p>
     <div class="row" style="gap:8px;flex-wrap:wrap">
       <button class="btn primary" data-act="tutexit" data-v="online">Play a real game</button>
       <button class="btn" data-act="tutagain">Play the lesson again</button>
@@ -9414,7 +10035,7 @@ async function flushPending(){
 }
 async function pushName(){
   if(!ACCT) return;
-  try{ await acctCall('PUT', '/api/account', {name: PROFILE.name}); PROFILE.nameDirty = false; saveProfile(); }catch(e){ AC.status = 'offline'; }
+  try{ await acctCall('PUT', '/api/account', {name: PROFILE.name, emoji: PROFILE.emoji||''}); PROFILE.nameDirty = false; saveProfile(); }catch(e){ AC.status = 'offline'; }
 }
 async function fetchLog(id){
   AC.fetching[id] = true;
@@ -9430,7 +10051,7 @@ function accountCardHTML(){
   if(!accountsAvailable()) return `<div class="callout">Accounts work on the website copy of Territory. Here, your record is kept in this browser.</div>`;
   if(ACCT) return `<div class="card-panel acct-card in">
       <div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap">
-        <span class="acct-badge" aria-hidden="true">${esc((ACCT.user||'?').charAt(0).toUpperCase())}</span>
+        ${avatarHTML(PROFILE.emoji, PROFILE.name||ACCT.user)}
         <div class="acct-who"><b>${esc(ACCT.user)}</b><span>${AC.status==='offline' ? 'Offline \u2014 games will save when you\u2019re back' : (PROFILE.pending||[]).length ? 'Saving\u2026' : 'Signed in \u00B7 saved to your account'}</span></div>
         <button class="btn sm" data-act="acctout" style="margin-left:auto">Sign out</button>
       </div>

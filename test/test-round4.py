@@ -146,7 +146,7 @@ with sync_playwright() as p:
     pg.evaluate("()=>{ finishGame(); }")
     check(pg.evaluate("PROFILE.games.length") == 1, 'a sandbox game is not')
     pg.evaluate("()=>{ G=null; UI.screen='title'; render(); }")
-    check('Profile' in pg.inner_text('.title-actions'), 'the title has a Profile button')
+    check(pg.query_selector('.title-actions [data-screen="profile"], .title-actions [data-screen="social"]') is not None, 'the title reaches the Profile (through Social)')
     pg.click('[data-act="go"][data-screen="profile"]'); pg.wait_for_timeout(150)
     txt = pg.inner_text('.page')
     check('played' in txt and 'Match history' in txt and pg.query_selector('.pf-game') is not None, 'Profile shows the record and the history')

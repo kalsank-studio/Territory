@@ -126,6 +126,8 @@ the games and saves them when it's back.
 Everything except register and login sends `Authorization: Bearer <token>`.
 `node test/test-social.mjs` (or with `BASE=…`) checks the social routes.
 
+**Updating to 0.9:** upload `server/accounts.js` **and** `server/worker.js` (seats now carry each player's emoji) with the game files. Still no new migration. `GET /api/stats` (no sign-in) returns everyone's stats.
+
 **Updating to 0.8:** upload `server/accounts.js` with the rest. There is no new Durable Object class or migration —
 player search uses one more object of the `Account` class.
 `BASE=https://territory.<your-name>.workers.dev node test/test-accounts.mjs` checks a deployed copy (it makes

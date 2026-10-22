@@ -19,7 +19,7 @@ STEP = """()=>{
   const p = G.players[me];
   const sheet = document.querySelector('.sheet.choice');
   if(sheet){
-    const b = sheet.querySelector('.hand [data-act], .stack [data-act]:not([disabled]), .opt-row [data-act]');
+    const b = sheet.querySelector('.mode-opt:not(.on):not([disabled])') || sheet.querySelector('.hand [data-act], .stack [data-act]:not([disabled]):not(.mode-opt), .opt-row [data-act]');
     if(b){ b.click(); return 'chose'; }
   }
   const pick = document.querySelector('.slot.pickable, .slot.summon-target');

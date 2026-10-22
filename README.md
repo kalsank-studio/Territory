@@ -864,6 +864,22 @@ The server side is in `server/accounts.js` (`socialRoute`); search uses one more
 
 Title → **Tutorial**. Eight short pages (how to win; cards; planets and slots; Energy and Power; satisfying a condition; a round's two phases; abilities and their verbs; then the game), followed by a **guided game** against a scripted Rival with stacked decks on four planets (`TUTOR_LIB`, `TUTOR_STACKS`, `TUTOR_ENEMY`). The coach asks for one move at a time and the board highlights the card and the slot; any other move is turned away with a nudge (`tutAllows`). Along the way you satisfy ⚡≤2 → +2⚡ with Blade, discard Battleaxe with Ward, draw with Atlas, use Aqitan's activated ability, create Stardust with Starfall, chain Lightspark → Sahel → Ambrosia, pull the Rival's Stardust off the slot that paid them, burn Dexter below its condition with Torch, and bring Battleaxe back with the Amulet of Cochrane. It always ends 3–1 to you; Ashen Gate would be a tie without Torch and the Amulet. The lesson borrows its own library, isn't recorded, and hands yours back when you leave. `test/test-tutorial.py` plays it through by tapping what the coach highlights.
 
+## What's new in 0.9
+
+- **Tutorial rebuilt on your library.** Every card (ability, numbers, emoji) and all five planets come from the library you sent, in `TUTOR_LIB`. The board is Dirge Winds, Ashfall Rim, The Shoal, Hallow Moon and Oasis; the game ends 3–1 to the player with Oasis tied. The coach's words are `TUTOR_STEPS`, each with an id (`1.1` … `6.5`) that matches the *Territory tutorial — coach script* doc, so edited wording drops straight back in. The Rival's moves are `TUTOR_ENEMY`; the draw order is `TUTOR_STACKS`.
+- **Icon colours.** ⚡ is blue and 💪 is white everywhere: `paintIcons` wraps each one in text with `.ic-e` / `.ic-p`, and the stylesheet recolours the emoji (and the ones drawn inside the cost and Power circles).
+- **Opening deal** uses the very same animation as a normal draw (`fxDrawIn`, in from the side).
+- **The hand never collapses** — the tray keeps a card's height when it's empty.
+- **Profile emoji.** Pick one in Social → Profile (or type your own). It shows beside your name in the players bar, the lobby, the opening screen, friends lists and the win screen, and is saved to the account. Bots are 🤖.
+- **The winner's moment.** When a game ends, the winner's emoji (or initial) fills the screen in their colour with a burst, then the result. A tap skips it.
+- **No "+1 ⚡" tag** on slot cards — the green outline already says a slot paid.
+- **A slot with no reward** never lights up for a card you pick up.
+- **Planet stats** count, for each slot, the rounds it paid out of every round it was in play (games × 6).
+- **Unconfirmed placements** never reach the command log, replays or exports: at lock-in, everything a player placed and took back that turn is folded into one `commit` (where the cards ended up and the order the hand was left in), so a replay shows only what was committed and still ends in exactly the same state.
+- **Menus.** Profile is a tab of Social; Decks is a tab of Studio.
+- **Everyone's stats** — the same numbers as your own Stats, added up over every game any account records — are on the Replay page for now (`GET /api/stats`, kept by one more `Account` object named `~stats`).
+- **Search** now also finds any exact username, even an account nobody has opened since search arrived, and every account is listed as soon as it opens the game. A server that doesn't have the social routes yet says so instead of "Nobody by that username".
+
 ## Not built
 
 The server-held game and matchmaking (above). Local hot-seat covers 2–4 players on one

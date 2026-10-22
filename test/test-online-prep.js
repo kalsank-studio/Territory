@@ -36,7 +36,8 @@ function pathsOf(o, needle, path='', out=[]){
 }
 function checkView(env, seat, where){
   const view = env.ev(`playerView(G, ${seat})`);
-  const json = JSON.stringify(view);
+  /* once the game is over the replay (seed, decks, every move) goes to everyone on purpose */
+  const json = JSON.stringify(Object.assign({}, view, {replay: undefined}));
   const sec = secretsFor(env, seat);
   const leaked = sec.uids.filter(u => json.includes('"' + u + '"'));
   check(!leaked.length, `${where}: seat ${seat} view leaks ${leaked.length} hidden card id(s) ${leaked.length ? JSON.stringify(pathsOf(view, leaked[0])) : ''}`);

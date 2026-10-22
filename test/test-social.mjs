@@ -85,5 +85,32 @@ try{
   check(r.status === 409, 'ten comments per game at most');
   r = await call('GET', '/api/users/' + a.user, null, c.t);
   check(r.body.games[0].comments === 10, 'the profile counts comments');
+
+  // a profile emoji, and an exact username that was never listed
+  r = await call('PUT', '/api/account', { emoji: '🦊' }, a.t);
+  check(r.status === 200 && r.body.emoji === '🦊', 'set a profile emoji');
+  r = await call('PUT', '/api/account', { emoji: 'abc' }, a.t);
+  check(r.body.emoji === '', 'letters are not an emoji');
+  await call('PUT', '/api/account', { emoji: '🦊' }, a.t);
+  r = await call('GET', '/api/users/' + a.user, null, b.t);
+  check(r.body.emoji === '🦊', 'others see it on the profile');
+  r = await call('GET', '/api/users?q=' + b.user, null, a.t);
+  check(r.body.users.some(u => u.user === b.user), 'an exact username is always found');
+
+  // everyone's stats
+  r = await call('GET', '/api/stats');
+  const before = r.body.n || 0;
+  check(r.status === 200, 'everyone\u2019s stats can be read without signing in');
+  const sg = { id: 's' + tag + 'x2', at: Date.now(), mode: 'local', seat: 0, result: 'win', won: [3, 1], rounds: 6,
+    players: [{ name: 'Bo' }, { name: 'Bot', bot: true }], rows: [{ name: 'Oasis', scores: [10, 4], winner: 0 }],
+    stats: { v: 1, won: 1, draws: [1, 1, 2, 1, 1, 1], power: [4, 9, 15, 20, 26, 30], cards: [{ n: 'Blade', pw: 1 }],
+             slots: [{ p: 'Oasis', s: [{ c: 'x', r: '+1', o: 5, m: 4 }, { c: 'y', r: '+2', o: 0, m: 0 }, { c: 'z', r: '+1', o: 2, m: 1 }] }] } };
+  await call('POST', '/api/account/games', { games: [sg] }, b.t);
+  await call('POST', '/api/account/games', { games: [sg] }, b.t);   // the same game twice counts once
+  r = await call('GET', '/api/stats');
+  check(r.body.n === before + 1, 'a recorded game adds to everyone\u2019s stats, once');
+  const oasis = r.body.planets.find(p => p.name === 'Oasis');
+  check(oasis && oasis.slots.some(sl => sl.m >= 4 && sl.rounds >= 6), 'slots count rounds paid out of rounds played');
+  check(r.body.cards.some(c => c.name === 'Blade'), 'cards are counted');
 }catch(e){ fails++; console.log('  FAIL', e.message); }
 finally{ if(dev) dev.kill(); console.log(fails ? fails + ' failures' : 'social: all checks passed'); process.exit(fails ? 1 : 0); }
