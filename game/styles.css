@@ -1366,3 +1366,8 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
   .title-actions .btn{flex-direction:column;align-items:flex-start;gap:3px;padding:12px 20px}
   .title-actions .btn .k{margin-left:0;text-align:left}
 }
+/* Play screen: a nudge to sign in */
+.signin-nudge{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:11px 14px;border-radius:var(--r-m);
+  background:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-panel));border:1px solid color-mix(in srgb,var(--ui-accent) 45%,var(--ui-line));color:var(--ui-text);font-size:14px;line-height:1.4;cursor:pointer}
+.signin-nudge b{color:var(--ui-text)}
+.signin-nudge .sn-go{margin-left:auto;font-size:20px;color:var(--ui-dim)}

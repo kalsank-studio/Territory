@@ -1775,6 +1775,11 @@ function newGame(opts){
   const planetCount = clamp(s.planets|0, 1, Math.max(1, LIB.planets.length));
 
   const players = [];
+  /* One shared deck: the chosen deck once per player, shuffled together into a
+     single pile everyone draws from. A card belongs to whoever draws it. */
+  const shared = !!s.sharedDeck && !s.stacks;
+  const sharedDef = shared ? (deckById(s.sharedDeckId) || deckById(s.deckOf[0]) || LIB.decks[0]) : null;
+  const pile = shared ? shuffle(Array.from({length:n}, ()=>(sharedDef.cards||[]).map(id=>defById(id)).filter(Boolean).map(d=>{ const c = instance(d, 0); c.owner = null; return c; })).flat()) : null;
   for(let i=0;i<n;i++){
     const deck = deckById(s.deckOf[i] || LIB.decks[0].id);
     /* A stacked deck (the tutorial) is drawn in the order given; any other is shuffled. */
@@ -1783,7 +1788,7 @@ function newGame(opts){
     players.push({
       idx:i, name:(s.names && s.names[i]) || (!s.names && i===firstHumanOf(s, n) && profileName()) || PNAMES[i], kind:(s.kinds[i]||'human'),
       emoji: (s.emojis && s.emojis[i]!=null) ? String(s.emojis[i]) : (s.kinds[i]||'human')==='bot' ? '\u{1F916}' : (i===firstHumanOf(s, n) ? (PROFILE.emoji||'') : ''),
-      deck: stack ? cards.reverse() : shuffle(cards), hand:[], energy:0, planned:0, placed:[]
+      deck: pile || (stack ? cards.reverse() : shuffle(cards)), hand:[], energy:0, planned:0, placed:[]
     });
   }
 
@@ -1810,6 +1815,7 @@ function newGame(opts){
     online: !!s.online,
     mulligans: s.mulligan!==false && !s.tutorial,   // one mulligan each, in round 1
     tutorial: !!s.tutorial,
+    sharedDeck: shared, sharedDeckName: shared ? sharedDef.name : null,
     gameId: Date.now().toString(36) + uiRnd(1e9).toString(36),   // for the match history; not part of the rules
     cmdLog:[],     // every accepted command, in order: what a replay or a server re-applies
     events:[],     // what happened, for the screen to animate: {n, k, …} (see emit)
@@ -1826,8 +1832,9 @@ function newGame(opts){
   G.setup = {
     seed, players:n, kinds: players.map(p=>p.kind), names: players.map(p=>p.name), emojis: players.map(p=>p.emoji||''),
     deckOf: players.map((p,i)=>(deckById(s.deckOf[i] || LIB.decks[0].id)||{}).id),
+    sharedDeck: shared, sharedDeckId: shared ? sharedDef.id : null,
     planets: planetCount, rounds: G.rounds, mulligan: G.mulligans, simul: G.simul, sandbox: G.sandbox,
-    lib: replayLibSnapshot(players.map((p,i)=>deckById(s.deckOf[i] || LIB.decks[0].id)))
+    lib: replayLibSnapshot(players.map((p,i)=>deckById(s.deckOf[i] || LIB.decks[0].id)).concat(shared ? [sharedDef] : []))
   };
 
   UI.transition = null; UI.flipAnim = null; UI.autoflip = false;
@@ -1918,6 +1925,7 @@ function say(t, who, vis){ G.log.push(vis ? {t, who, vis} : {t, who}); }
 function drawCard(p, silent, quiet){
   if(!p.deck.length){ if(!silent) say(`${p.name} has no cards left to draw.`, p.idx); return null; }
   const card = p.deck.pop();
+  if(G.sharedDeck) card.owner = p.idx;            // from the shared pile: it's yours once you draw it
   p.hand.push(card);
   if(!quiet && G.track){ const t = G.track.draws[p.idx]; t[G.round] = (t[G.round]||0) + 1; }
   if(!quiet) fxArrive(card, 'draw');
@@ -2132,7 +2140,9 @@ function canMulligan(p){
 function mulligan(p){
   if(!canMulligan(p)) return false;
   const n = p.hand.length;
-  p.deck = shuffle(p.deck.concat(p.hand));
+  const back = shuffle(p.deck.concat(p.hand));
+  if(G.sharedDeck) G.players.forEach(q=>{ q.deck = back; });   // the one pile, for everyone
+  else p.deck = back;
   p.hand = [];
   for(let i=0;i<n;i++){ const c = drawCard(p, true, true); if(c) fxArrive(c, 'draw'); }
   p.mulled = true;
@@ -2582,6 +2592,10 @@ setInterval(()=>{ try{ if(typeof G!=='undefined' && G) tickTimer(); }catch(e){ c
    held up for DICE_HOLD_MS. Input waits for them (busy()), and so do bots,
    income Energy and the turn timer. A tap skips to the end. */
 const DICE_ROLL_MS = Math.max(PAUSE * 0.9, 30), DICE_HOLD_MS = Math.max(PAUSE * 1.4, 30);   // the hold also lets the standings be read
+/** A saved game comes back with one copy of the shared pile per player: make them one pile again. */
+function relinkSharedDeck(g){
+  if(g && g.sharedDeck && !g.isView && g.players.length){ const d = g.players[0].deck; g.players.forEach(p=>{ p.deck = d; }); }
+}
 function rollForFirst(){
   let rolls, best, rerolls = 0;
   if(G.tutorial){                                  // the lesson always lets you reveal first
@@ -3016,7 +3030,7 @@ function applyCommit(p, cmd){
 function dryRun(cmd){
   if(!['place','move','unplace'].includes(cmd.t)) return '';
   const real = G;
-  try{ G = JSON.parse(JSON.stringify(real)); return applyCommand(cmd)!==false ? '' : 'illegal'; }
+  try{ G = JSON.parse(JSON.stringify(real)); relinkSharedDeck(G); return applyCommand(cmd)!==false ? '' : 'illegal'; }
   catch(e){ return ''; }
   finally{ G = real; }
 }
@@ -4899,9 +4913,20 @@ function viewSetup(){
         <button class="chip ${s.kinds[i]!=='bot'?'on':''}" data-act="kind" data-i="${i}" data-v="human">Human</button>
         <button class="chip ${s.kinds[i]==='bot'?'on':''}" data-act="kind" data-i="${i}" data-v="bot">Bot</button>
       </div>
-      <label class="field"><span>Deck</span>
-        <select data-act="seatdeck" data-i="${i}">${deckOpts(i)}</select></label>
+      ${s.sharedDeck ? '' : `<label class="field"><span>Deck</span>
+        <select data-act="seatdeck" data-i="${i}">${deckOpts(i)}</select></label>`}
     </div>`).join('');
+  const sharedId = deckById(s.sharedDeckId) ? s.sharedDeckId : (s.deckOf[0] || LIB.decks[0].id);
+  const deckMode = `<div class="card-panel stack" style="gap:8px">
+      <div class="row" style="gap:6px">
+        <b style="flex:1">Decks</b>
+        <button class="chip ${!s.sharedDeck?'on':''}" data-act="deckmode" data-v="own">Own deck each</button>
+        <button class="chip ${s.sharedDeck?'on':''}" data-act="deckmode" data-v="shared">One shared deck</button>
+      </div>
+      ${s.sharedDeck ? `<label class="field"><span>Shared deck</span>
+        <select data-act="shareddeck">${LIB.decks.map(d=>`<option value="${d.id}" ${sharedId===d.id?'selected':''}>${esc(d.name)} (${d.cards.length})</option>`).join('')}</select></label>
+      <p class="tiny muted" style="margin:0">Everyone draws from one pile: this deck once per player, shuffled together. A card is yours once you draw it.</p>` : ''}
+    </div>`;
 
   const short = LIB.decks.filter(d=>d.cards.length<6);
   return `${topbar(s.sandbox?'New sandbox':'New game')}
@@ -4914,6 +4939,7 @@ function viewSetup(){
       <label class="field"><span>Rounds</span>
         <select data-act="set" data-k="rounds">${[4,5,6,7,8].map(n=>`<option value="${n}" ${s.rounds===n?'selected':''}>${n}</option>`).join('')}</select></label>
     </div>
+    ${deckMode}
     ${seats}
     ${placementSetupHTML(s)}
     <label class="row" style="gap:8px">
@@ -7203,6 +7229,9 @@ document.addEventListener('click', e=>{
     case 'peekdef': inspectDef(t.dataset.id); break;
     case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
     case 'pftab': UI.pfTab = t.dataset.v; render(); break;
+    case 'deckmode': LIB.settings.sharedDeck = t.dataset.v==='shared';
+      if(LIB.settings.sharedDeck && !deckById(LIB.settings.sharedDeckId)) LIB.settings.sharedDeckId = LIB.settings.deckOf[0] || LIB.decks[0].id;
+      saveSoon(); render(); break;
     case 'admunlock': { const el = document.querySelector('[data-adm="pw"]'); const v = el ? el.value : ''; if(v) adminUnlock(v); else { ADM.err = 'Type the admin password.'; render(); } break; }
     case 'admlock': adminLock(); break;
     case 'admopen': UI.admGate = true; ADM.err = ''; render(); break;
@@ -7640,6 +7669,7 @@ function onEdit(e, isChange){
   }
   if(d.act==='exportsprites'){ UI.exportSprites = el.checked; return; }
   if(d.act==='seatdeck'){ LIB.settings.deckOf[+d.i] = el.value; saveSoon(); return; }
+  if(d.act==='shareddeck'){ LIB.settings.sharedDeckId = el.value; saveSoon(); return; }
   if(d.act==='hide'){ LIB.settings.hide = el.checked; saveSoon(); return; }
   if(d.act==='sandbox'){ LIB.settings.sandbox = el.checked; saveSoon(); render(); return; }
   if(d.act==='mulligan'){ LIB.settings.mulligan = el.checked; saveSoon(); return; }
@@ -7962,7 +7992,8 @@ function defaultLobby(n){
   const decks = LIB.decks;
   return { seats: Array.from({length:n}, (_,i)=>({deck:(LIB.settings.deckOf[i] && decks.some(d=>d.id===LIB.settings.deckOf[i])) ? LIB.settings.deckOf[i] : decks[Math.min(i, decks.length-1)].id})),
            planets: LIB.settings.planets||5, rounds: LIB.settings.rounds||6,
-           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false, mulligan: LIB.settings.mulligan!==false };
+           turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false, mulligan: LIB.settings.mulligan!==false,
+           sharedDeck: !!LIB.settings.sharedDeck, sharedDeckId: (decks.some(d=>d.id===LIB.settings.sharedDeckId) ? LIB.settings.sharedDeckId : decks[0].id) };
 }
 function lobbyPayload(){
   return {t:'lobby', lobby:ON.lobby, decks:LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})), playing: !!(G && G.online && !G.over)};
@@ -8000,7 +8031,7 @@ function startOnlineGame(){
   ON.sent = {};
   NET.seat = 0; NET.send = null;
   UI.screen = 'game'; UI.sheet = null;
-  newGame({online:true, players:n, kinds, names, emojis, deckOf:L.seats.map(s=>s.deck), planets:L.planets, rounds:L.rounds,
+  newGame({online:true, players:n, kinds, names, emojis, deckOf:L.seats.map(s=>s.deck), sharedDeck:!!L.sharedDeck, sharedDeckId:L.sharedDeckId, planets:L.planets, rounds:L.rounds,
            sandbox:!!L.sandbox, mulligan:L.mulligan!==false, hide:false, placement:'simultaneous'});
   hostBroadcast();
 }
@@ -8077,6 +8108,7 @@ function hostResume(saved){
   try{ hg = JSON.parse(localStorage.getItem(HOSTGAME_KEY)||'null'); }catch(e){}
   if(hg && hg.code===room.code && hg.g){
     G = hg.g; ON.lobby = hg.lobby; ON.roomSeats = hg.roomSeats || G.players.length;
+    relinkSharedDeck(G);
     adoptRng(G); UID_LIVE = G.uids;
     UI.transition = null; UI.flipAnim = null; UI.autoflip = false; UI.drag = null; UI.sel = null;
     UI.sheet = null; UI.gate = false; UI.botQueued = {}; UI.review = false;
@@ -8261,6 +8293,7 @@ function viewOnline(){
   const name = esc(PROFILE.name||'');
   return `${topbar('Play')}
   <div class="page stack online-page">
+    ${!ACCT && accountsAvailable() ? `<button class="signin-nudge" data-act="go" data-screen="profile"><span aria-hidden="true">\u{1F464}</span><span><b>Sign in or create an account</b> to record your matches and add friends! No personal info required.</span><span class="sn-go" aria-hidden="true">\u203A</span></button>` : ''}
     ${ON.error?`<div class="callout">${esc(ON.error)}</div>`:''}
     <h3 class="op-sect">Online</h3>
     <label class="field"><span>Your name</span><input data-on-input="name" maxlength="24" placeholder="What the others will see" value="${name}" autocomplete="nickname"></label>
@@ -8315,10 +8348,10 @@ function viewLobby(){
     const s = ON.seats.find(x=>x.seat===i);
     const me = i===ON.seat;
     const status = me ? 'You' : !s ? (host ? 'Empty — a bot plays' : 'Waiting…') : s.online ? 'Here' : 'Away';
-    const canPick = me || (host && !s);
+    const canPick = (me || (host && !s)) && !L.sharedDeck;
     const deck = canPick
       ? `<select data-on-input="deck" data-i="${i}" aria-label="Deck for ${esc(s?s.name:PNAMES[i])}">${decks.map(d=>`<option value="${d.id}" ${L.seats[i].deck===d.id?'selected':''}>${esc(d.name)} (${d.n})</option>`).join('')}</select>`
-      : `<span class="tiny muted">${esc(deckName(L.seats[i].deck))}</span>`;
+      : `<span class="tiny muted">${L.sharedDeck ? 'shared deck' : esc(deckName(L.seats[i].deck))}</span>`;
     return `<div class="lobby-seat ${s&&s.online||me?'here':''}" style="--pc:${PCOLORS[i]}">
       <span class="dot"></span>
       <div class="ls-name"><b>${s && s.emoji ? esc(s.emoji)+' ' : ''}${esc(s ? s.name : (host ? 'Bot '+(i+1) : PNAMES[i]))}</b><span>${i===0?'Host · ':''}${status}</span></div>
@@ -8333,6 +8366,13 @@ function viewLobby(){
       <label class="field"><span>Turn timer</span><select data-on-input="turnTimer">${opts([0,30,45,60,90,120], L.turnTimer, v=>v?fmtClock(v*1000):'Off')}</select></label>
       ${L.turnTimer ? `<label class="field"><span>Ability choice timer</span><select data-on-input="choiceTimer">${opts(CHOICE_PRESETS.map(x=>x[0]), L.choiceTimer, v=>fmtClock(v*1000))}</select></label>` : '<div></div>'}
     </div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <b class="tiny" style="flex:1">Decks</b>
+      <button class="chip ${!L.sharedDeck?'on':''}" data-on="deckmode" data-v="own">Own deck each</button>
+      <button class="chip ${L.sharedDeck?'on':''}" data-on="deckmode" data-v="shared">One shared deck</button>
+    </div>
+    ${L.sharedDeck ? `<label class="field"><span>Shared deck \u2014 once per player, shuffled together</span>
+      <select data-on-input="shareddeck">${opts(decks.map(d=>d.id), L.sharedDeckId, id=>{ const d = decks.find(x=>x.id===id); return esc(d.name)+' ('+d.n+')'; })}</select></label>` : ''}
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-on-input="mulligan" ${L.mulligan!==false?'checked':''} style="width:auto">
       <span class="tiny">One mulligan each in round 1</span>
@@ -8340,7 +8380,7 @@ function viewLobby(){
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-on-input="sandbox" ${L.sandbox?'checked':''} style="width:auto">
       <span class="tiny"><b>Sandbox mode</b> \u2014 everyone gets the \u{1F9EA} bench: add Energy, put any card in a hand, change the round, reset the board.</span>
-    </label>` : `<p class="tiny muted" style="margin:0">${L.planets} planets · ${L.rounds} rounds · ${L.turnTimer ? fmtClock(L.turnTimer*1000)+' turns, '+fmtClock(L.choiceTimer*1000)+' choices' : 'no turn timer'}${L.sandbox?' \u00B7 sandbox mode':''}</p>`;
+    </label>` : `<p class="tiny muted" style="margin:0">${L.planets} planets · ${L.rounds} rounds · ${L.turnTimer ? fmtClock(L.turnTimer*1000)+' turns, '+fmtClock(L.choiceTimer*1000)+' choices' : 'no turn timer'}${L.sharedDeck?' \u00B7 one shared deck':''}${L.sandbox?' \u00B7 sandbox mode':''}</p>`;
   return `${topbar('Room '+ON.code)}
   <div class="page stack online-page">
     ${netStatusHTML()}
@@ -8396,6 +8436,7 @@ document.addEventListener('click', e=>{
     case 'forget': forgetRoom(); render(); break;
     case 'leave': leaveRoom(); UI.screen = 'online'; render(); break;
     case 'start': if(isHost()) startOnlineGame(); break;
+    case 'deckmode': if(isHost() && ON.lobby){ ON.lobby.sharedDeck = t.dataset.v==='shared'; LIB.settings.sharedDeck = ON.lobby.sharedDeck; saveSoon(); hostSync(); render(); } break;
     case 'copylink': copyText(t.dataset.v, 'Invite link'); break;
     case 'share': navigator.share({title:'Territory', text:'Join my game of Territory: room '+ON.code, url:t.dataset.v}).catch(()=>{}); break;
     case 'standin': if(isHost()){ dispatch({t:'standin', seat:0, target:+t.dataset.i, on:true}); render(); } break;
@@ -8425,6 +8466,7 @@ document.addEventListener('change', e=>{
     render(); return;
   }
   if(isHost() && ON.lobby && (k==='sandbox' || k==='mulligan')){ ON.lobby[k] = el.checked; hostSync(); render(); return; }
+  if(isHost() && ON.lobby && k==='shareddeck'){ ON.lobby.sharedDeckId = el.value; LIB.settings.sharedDeckId = el.value; saveSoon(); hostSync(); render(); return; }
   if(isHost() && ON.lobby && ['planets','rounds','turnTimer','choiceTimer'].includes(k)){ ON.lobby[k] = +el.value; hostSync(); render(); }
 });
 
@@ -8638,7 +8680,7 @@ function startReplay(file){
   UI.replaying = true;
   UI.screen = 'game'; UI.sheet = null;
   UI.winSeen = null;
-  newGame({seed:st.seed, players:st.players, kinds:st.kinds, names:st.names, emojis:st.emojis, deckOf:st.deckOf,
+  newGame({seed:st.seed, players:st.players, kinds:st.kinds, names:st.names, emojis:st.emojis, deckOf:st.deckOf, sharedDeck:!!st.sharedDeck, sharedDeckId:st.sharedDeckId,
            planets:st.planets, rounds:st.rounds, mulligan:st.mulligan, forceSimul:!!st.simul, sandbox:!!st.sandbox, online:false});
   G.gameId = 'replay';
   render();
