@@ -1341,3 +1341,6 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 @keyframes wfFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
 @keyframes wfSpark{0%{opacity:1;transform:rotate(var(--a)) translateX(0) scale(1.2)}100%{opacity:0;transform:rotate(var(--a)) translateX(var(--d)) scale(.3)}}
 @media (prefers-reduced-motion:reduce){.wf-orb,.wf-burst i{animation:none}}
+/* v0.9.1 admin lock */
+.ag-lock{font-size:30px;line-height:1}
+.admin-gate .card-panel{align-self:center;width:100%}

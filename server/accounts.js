@@ -36,6 +36,10 @@ const FRIENDS_MAX = 25;
 const INVITE_MS = 2 * 60 * 60 * 1000;   // an invite to a room lasts two hours
 const PUBLIC_GAMES = 30;                // the games another player can see
 const COMMENTS_PER_GAME = 10, COMMENT_MAX = 280;
+const ADMIN_TRIES = 5;                       // wrong admin passwords from one address before it waits
+const ADMIN_LOCK_MS = 15 * 60 * 1000;        // …15 minutes, doubling each time it happens again
+const ADMIN_GLOBAL_FAILS = 50;               // wrong passwords from everywhere in an hour before the door shuts for the hour
+const ADMIN_SESSION_MS = 30 * 24 * 3600e3;   // an admin unlock lasts 30 days on that browser
 
 const hex = buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
 const randHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
@@ -317,6 +321,49 @@ export class Account extends DurableObject {
     await this.ctx.storage.put('stats', S);
     return { ok: true };
   }
+  /* --- the admin lock: one more object ("~admin") keeps admin sessions and
+     counts failed password attempts per address. The password itself is a
+     Worker secret (ADMIN_PASSWORD) and never stored here. */
+  async adminGate(ip){
+    const f = (await this.ctx.storage.get('fail:' + ip)) || { n: 0, until: 0 };
+    const all = (await this.ctx.storage.get('failAll')) || { n: 0, since: Date.now() };
+    const now = Date.now();
+    if(f.until > now) return { wait: Math.ceil((f.until - now) / 1000) };
+    if(now - all.since < 3600e3 && all.n >= ADMIN_GLOBAL_FAILS) return { wait: Math.ceil((all.since + 3600e3 - now) / 1000) };
+    return { wait: 0 };
+  }
+  async adminFail(ip){
+    const now = Date.now();
+    const f = (await this.ctx.storage.get('fail:' + ip)) || { n: 0, until: 0 };
+    f.n++;
+    if(f.n >= ADMIN_TRIES){ f.until = now + ADMIN_LOCK_MS * Math.pow(2, Math.min(6, Math.floor(f.n / ADMIN_TRIES) - 1)); }
+    await this.ctx.storage.put('fail:' + ip, f);
+    let all = (await this.ctx.storage.get('failAll')) || { n: 0, since: now };
+    if(now - all.since >= 3600e3) all = { n: 0, since: now };
+    all.n++;
+    await this.ctx.storage.put('failAll', all);
+    return { ok: true };
+  }
+  async adminOpen(ip, fp){
+    await this.ctx.storage.delete('fail:' + ip);
+    const now = Date.now();
+    const list = ((await this.ctx.storage.get('sessions')) || []).filter(x => x.fp === fp && now - x.at < ADMIN_SESSION_MS);
+    const secret = randHex(32);
+    list.push({ secret, at: now, fp });
+    while(list.length > 10) list.shift();
+    await this.ctx.storage.put('sessions', list);
+    return { token: 'admin.' + secret };
+  }
+  async adminCheck(secret, fp){
+    const now = Date.now();
+    const list = (await this.ctx.storage.get('sessions')) || [];
+    return list.some(x => x.fp === fp && now - x.at < ADMIN_SESSION_MS && sameText(x.secret, secret));
+  }
+  async adminClose(secret){
+    const list = ((await this.ctx.storage.get('sessions')) || []).filter(x => !sameText(x.secret, secret));
+    await this.ctx.storage.put('sessions', list);
+    return { ok: true };
+  }
   async statsGet(){ return publicStats((await this.ctx.storage.get('stats')) || freshStats()); }
 
   async clearGames(secret){
@@ -331,7 +378,7 @@ export class Account extends DurableObject {
 
 /** The /api/account routes. Returns a Response, or null if the path isn't one of them. */
 export async function accountRoute(request, env, url, json){
-  if(!/^\/api\/(account|social|users|stats)(\/|$)/.test(url.pathname)) return null;
+  if(!/^\/api\/(account|social|users|stats|admin)(\/|$)/.test(url.pathname)) return null;
   const stubFor = u => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(u));
   const reply = r => r.error ? json({ error: r.error }, r.status || 400) : json(r, r.token && url.pathname.endsWith('/register') ? 201 : 200);
   const body = async () => { try{ return await request.json(); }catch(e){ return {}; } };
@@ -348,6 +395,7 @@ export async function accountRoute(request, env, url, json){
   }
 
   if(p === '/api/stats' && request.method === 'GET') return json(await stubFor(STATS).statsGet());
+  if(p.startsWith('/api/admin')) return adminRoute(request, env, p, stubFor, json, body);
 
   /* everything else needs a session */
   const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -381,7 +429,34 @@ export async function accountRoute(request, env, url, json){
   return json({ error: 'Not found.' }, 404);
 }
 
-const DIRECTORY = '~directory', STATS = '~stats';
+const DIRECTORY = '~directory', STATS = '~stats', ADMIN = '~admin';
+const sha256 = async t => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)));
+/** The admin lock on the Studio.
+     POST /api/admin/login  {password} -> {token}    (the password is the ADMIN_PASSWORD secret)
+     GET  /api/admin                   -> {admin:true}   with Authorization: Bearer <token>
+     POST /api/admin/logout
+   Changing the secret signs every admin browser out. */
+async function adminRoute(request, env, p, stubFor, json, body){
+  const secretPw = env.ADMIN_PASSWORD;
+  if(!secretPw) return json({ error: 'No admin password has been set on the server yet.', unset: true }, 503);
+  const fp = (await sha256('territory-admin:' + secretPw)).slice(0, 24);
+  const gate = stubFor(ADMIN);
+  const ip = request.headers.get('CF-Connecting-IP') || 'local';
+  if(p === '/api/admin/login' && request.method === 'POST'){
+    const g = await gate.adminGate(ip);
+    if(g.wait) return json({ error: `Too many wrong passwords. Try again in ${Math.ceil(g.wait / 60)} minute${g.wait > 60 ? 's' : ''}.`, wait: g.wait }, 429);
+    const b = await body();
+    const ok = typeof b.password === 'string' && sameText(await sha256(b.password), await sha256(secretPw));
+    if(!ok){ await gate.adminFail(ip); return json({ error: 'That isn\u2019t the admin password.' }, 401); }
+    return json(await gate.adminOpen(ip, fp));
+  }
+  const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  const secret = auth.startsWith('admin.') ? auth.slice(6) : '';
+  if(p === '/api/admin' && request.method === 'GET')
+    return (secret && await gate.adminCheck(secret, fp)) ? json({ admin: true }) : json({ error: 'Not an admin session.' }, 401);
+  if(p === '/api/admin/logout' && request.method === 'POST'){ if(secret) await gate.adminClose(secret); return json({ ok: true }); }
+  return json({ error: 'Not found.' }, 404);
+}
 /** Friends, requests, invites, other players' profiles and comments.
      GET    /api/social                    -> {friends:[{user,name,record}], incoming, outgoing, invites}
      GET    /api/social/poll               -> {incoming:n, invites:[…]}      (cheap, for polling)

@@ -4860,7 +4860,7 @@ function viewTitle(){
         <button class="btn" data-act="go" data-screen="tutorial">Tutorial<span class="k">learn to play, then a guided game</span></button>
         <button class="btn" data-act="go" data-screen="${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? 'social' : 'profile'}">Social<span class="k">${ACCT && SO.incoming ? SO.incoming+' friend request'+(SO.incoming===1?'':'s') : ACCT && SO.data && SO.data.invites && SO.data.invites.length ? 'you have an invite' : (()=>{ const st = profileStats(); return (PROFILE.emoji ? esc(PROFILE.emoji)+' ' : '') + (st.played ? 'profile '+st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 friends' : 'profile, friends, invites'); })()}</span>${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? '<span class="so-dot" aria-hidden="true"></span>' : ''}</button>
         <button class="btn" data-act="go" data-screen="replay">Replay<span class="k">watch a game again \u00B7 everyone\u2019s stats</span></button>
-        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">cards, planets, decks, art &amp; data</span></button>
+        <button class="btn" data-act="go" data-screen="studio">${isAdmin() ? 'Studio' : '\u{1F512} Studio'}<span class="k">${isAdmin() ? 'cards, planets, decks, art &amp; data' : 'admin only'}</span></button>
         <button class="btn ghost" data-act="go" data-screen="rules">Full rules</button>
       </div>
     </div>
@@ -6112,7 +6112,67 @@ function viewRules(){
 
 let studioTab = 'cards';
 
+/* --- the admin lock on the Studio ------------------------------------------
+   The Studio (cards, planets, decks, art & data) opens only for an admin. The
+   password lives on the server as a secret; a right answer gives this browser
+   an admin session for 30 days. Offline (file://) there is no server to ask,
+   so the Studio stays locked there. */
+const ADMIN_KEY = KEY + '.admin';
+const ADM = { token: null, ok: false, checked: false, busy: false, err: '' };
+try{ ADM.token = localStorage.getItem(ADMIN_KEY) || null; }catch(e){}
+const isAdmin = () => ADM.ok;
+async function adminCall(method, path, body){
+  const r = await fetch(location.origin + path, {method, headers: Object.assign({'Content-Type':'application/json'}, ADM.token ? {Authorization:'Bearer '+ADM.token} : {}),
+    body: body ? JSON.stringify(body) : undefined});
+  let j = {}; try{ j = await r.json(); }catch(e){}
+  if(!r.ok) throw Object.assign(new Error(j.error || (r.status===404 ? 'The admin lock isn\u2019t on the server yet \u2014 upload the new server files.' : 'The server said no.')), {status:r.status, unset:j.unset});
+  return j;
+}
+async function adminCheck(){
+  if(!ADM.token || !accountsAvailable()){ ADM.checked = true; return; }
+  try{ await adminCall('GET', '/api/admin'); ADM.ok = true; }
+  catch(e){ if(e.status===401){ ADM.token = null; try{ localStorage.removeItem(ADMIN_KEY); }catch(x){} } ADM.ok = false; }
+  ADM.checked = true;
+  render();
+}
+async function adminUnlock(pw){
+  if(ADM.busy) return;
+  ADM.busy = true; ADM.err = ''; render();
+  try{
+    const r = await adminCall('POST', '/api/admin/login', {password: pw});
+    ADM.token = r.token; ADM.ok = true; ADM.checked = true;
+    try{ localStorage.setItem(ADMIN_KEY, r.token); }catch(e){}
+    toast('Studio unlocked.');
+  }catch(e){ ADM.err = e.message || 'That didn\u2019t work.'; }
+  ADM.busy = false;
+  render();
+}
+function adminLock(){
+  if(ADM.token) adminCall('POST', '/api/admin/logout').catch(()=>{});
+  ADM.token = null; ADM.ok = false;
+  try{ localStorage.removeItem(ADMIN_KEY); }catch(e){}
+  if(UI.screen==='studio'){ UI.screen = 'title'; }
+  toast('Studio locked on this browser.');
+  render();
+}
+function viewAdminGate(){
+  const online = accountsAvailable();
+  return `${topbar('Studio')}
+  <div class="page stack admin-gate">
+    <div class="card-panel stack" style="max-width:440px">
+      <div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap"><span class="ag-lock" aria-hidden="true">\u{1F512}</span>
+        <div><b>The Studio is for admins</b><div class="tiny muted">Cards, planets, decks and art can only be changed with the admin password.</div></div></div>
+      ${!online ? `<div class="callout">The admin password is checked by the server, so the Studio can only be unlocked on the website copy of Territory.</div>`
+        : !ADM.checked && ADM.token ? `<div class="net-wait"><span class="spinner"></span>Checking this browser\u2019s admin session\u2026</div>`
+        : `<label class="field"><span>Admin password</span>
+            <input type="password" data-adm="pw" autocomplete="current-password" spellcheck="false" autocapitalize="none"></label>
+          ${ADM.err ? `<div class="acct-err">${esc(ADM.err)}</div>` : ''}
+          <button class="btn primary" data-act="admunlock" ${ADM.busy?'disabled':''} style="align-self:flex-start">${ADM.busy?'Checking\u2026':'Unlock the Studio'}</button>`}
+    </div>
+  </div>`;
+}
 function viewStudio(){
+  if(!isAdmin()) return viewAdminGate();
   const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']];
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
@@ -6122,7 +6182,7 @@ function viewStudio(){
              : studioTab==='art'     ? spritesBody()
              : studioTab==='decks'   ? decksBody()
              : cardStudio(studioTab==='tokens');
-  return `${topbar('Studio')}<div class="page stack">${bar}${body}</div>`;
+  return `${topbar('Studio', `<button class="btn sm ghost" data-act="admlock" title="Lock the Studio on this browser">\u{1F513} Lock</button>`)}<div class="page stack">${bar}${body}</div>`;
 }
 
 function importStudio(){
@@ -7129,6 +7189,8 @@ document.addEventListener('click', e=>{
     case 'peekdef': inspectDef(t.dataset.id); break;
     case 'histopen': UI.histId = t.dataset.id; UI.sheet = 'hist'; render(); break;
     case 'pftab': UI.pfTab = t.dataset.v; render(); break;
+    case 'admunlock': { const el = document.querySelector('[data-adm="pw"]'); const v = el ? el.value : ''; if(v) adminUnlock(v); else { ADM.err = 'Type the admin password.'; render(); } break; }
+    case 'admlock': adminLock(); break;
     case 'pfemoji': setProfileEmoji(t.dataset.v); render(); break;
     case 'soreload': SO.data = null; soLoad(); render(); break;
     case 'souser': if(e.target.closest('[data-act="soinvite"]')) break; soOpenUser(t.dataset.u); break;
@@ -9156,6 +9218,7 @@ document.addEventListener('change', e=>{ if(e.target.dataset && e.target.dataset
 document.addEventListener('input', e=>{ const k = e.target.dataset && e.target.dataset.so; if(!k) return;
   if(k==='q') soSearch(e.target.value); else if(k==='draft') SO.draft = e.target.value; });
 document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.so==='draft'){ e.preventDefault(); soComment(); } });
+document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.adm==='pw'){ e.preventDefault(); if(e.target.value) adminUnlock(e.target.value); } });
 
 /* --- signing in ------------------------------------------------------------ */
 const AC = { busy:false, error:'', status:'', nameT:null, fetching:{}, flushing:false };
@@ -10104,6 +10167,7 @@ if(!hadSaved) fetchShippedLibrary().then(data=>{
 });
 downloadsCap();   // ask early, so the first Download doesn't wait on it
 onlineBoot();
+adminCheck();
 if(ACCT && accountsAvailable()) syncAccount();
 
 window.addEventListener('pagehide', ()=>{ clearTimeout(saveTimer); save(); });
