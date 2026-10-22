@@ -21,10 +21,19 @@ const page = html
   .replace('<link rel="stylesheet" href="styles.css">', () => '<style>\n' + css + '</style>')
   .replace('<script src="game.js"></script>', () => '<script>\n' + js + '</script>');
 
+/* the title logo goes inside the page, so the single offline file has it too */
+const logo = path.join(src, 'art', 'logo.png');
+/* the menu font goes inside the page too */
+const fontDir = path.join(src, 'fonts');
+let pageIn = page;
+if(fs.existsSync(fontDir)) fs.readdirSync(fontDir).filter(f => /\.woff2$/.test(f)).forEach(f => {
+  pageIn = pageIn.split('fonts/' + f).join('data:font/woff2;base64,' + fs.readFileSync(path.join(fontDir, f)).toString('base64'));
+});
+const pageOut = fs.existsSync(logo) ? pageIn.split('art/logo.png').join('data:image/png;base64,' + fs.readFileSync(logo).toString('base64')) : pageIn;
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-fs.writeFileSync(path.join(out, 'index.html'), page);
-let note = 'index.html ' + page.length + ' bytes';
+fs.writeFileSync(path.join(out, 'index.html'), pageOut);
+let note = 'index.html ' + pageOut.length + ' bytes';
 
 const lib = path.join(src, 'library.json');
 if(fs.existsSync(lib)){

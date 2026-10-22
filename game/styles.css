@@ -1344,3 +1344,25 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 /* v0.9.1 admin lock */
 .ag-lock{font-size:30px;line-height:1}
 .admin-gate .card-panel{align-self:center;width:100%}
+/* read-only Studio (no admin password) */
+.ro-hide{display:none!important}
+.ro-note{font-size:13.5px;color:var(--ui-text);background:var(--ui-panel);border:1px solid var(--ui-line);border-radius:var(--r-m);padding:8px 12px}
+.studio-ro input:disabled,.studio-ro select:disabled,.studio-ro textarea:disabled{opacity:1;color:var(--ui-text);-webkit-text-fill-color:var(--ui-text);cursor:default;background:transparent}
+/* the title logo: its black background drops away into the starfield (screen
+   blending turns black into "nothing"), and its edges are feathered so no box shows */
+.wordmark.logo{margin:6px 0 2px;line-height:0;letter-spacing:0}
+.wordmark.logo img{display:block;width:min(100%,560px);height:auto;mix-blend-mode:screen;
+  -webkit-mask-image:radial-gradient(130% 160% at 50% 50%,#000 72%,transparent 100%);mask-image:radial-gradient(130% 160% at 50% 50%,#000 72%,transparent 100%);
+  animation:logoIn .9s ease-out both}
+@keyframes logoIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.wordmark.logo img{animation:none}}
+/* main menu: the titles in a wide, squared display face (Orbitron, SIL Open Font
+   License, shipped with the game) to echo the logo's lettering */
+@font-face{font-family:'Orbitron';src:url(fonts/orbitron-600.woff2) format('woff2');font-weight:600;font-style:normal;font-display:swap}
+.wordmark.logo{margin-top:30px}
+.title-actions .btn{font-family:'Orbitron',var(--font-d),sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:.09em;font-size:clamp(16px,4.6vw,21px);padding:15px 20px;gap:12px}
+.title-actions .btn .k{font-family:var(--font-b);text-transform:none;letter-spacing:0;font-weight:500;font-size:12.5px;text-align:right}
+@media (max-width:480px){
+  .title-actions .btn{flex-direction:column;align-items:flex-start;gap:3px;padding:12px 20px}
+  .title-actions .btn .k{margin-left:0;text-align:left}
+}

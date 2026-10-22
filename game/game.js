@@ -4802,6 +4802,7 @@ function render(){
   $('#app').classList.toggle('intro-deal', !!(UI.screen==='game' && UI.intro && UI.intro.stage==='deal'));
   steadyEntrances();
   paintIcons($('#app')); paintIcons($('#overlay'));
+  if(studioReadOnly()) lockStudioPage();
   if(keep){ const n = document.querySelector(keep.sel); if(n && document.activeElement!==n){ n.focus(); try{ n.setSelectionRange(keep.a, keep.b); }catch(e){} } }
   if(G && G.tutorial && UI.screen==='game') tutMark();
   if(G && G.online && !G.isView && ON.role==='host') hostBroadcast();     // guests see what the host sees
@@ -4847,12 +4848,7 @@ function viewTitle(){
   return `<div class="title-wrap">
     <svg class="starfield" aria-hidden="true">${stars}</svg>
     <div class="title-inner">
-      <div class="orbit-row" aria-hidden="true">
-        <span class="orbit" style="--o:#4fd6b0"></span><span class="orbit" style="--o:#f5b95c"></span>
-        <span class="orbit" style="--o:#a482f0"></span><span class="orbit" style="--o:#5cbfe4"></span>
-        <span class="orbit" style="--o:#f2856c"></span>
-      </div>
-      <h1 class="wordmark">Terri<em>tory</em></h1>
+      <h1 class="wordmark logo"><img src="art/logo.png" alt="Territory" width="920" height="136" decoding="async"></h1>
       <p class="tagline">Six rounds. Five worlds. Hold the most ground when the last card turns over.</p>
       <div class="title-actions">
         ${inRoom() ? `<button class="btn primary" data-on="backtoroom">Back to room ${esc(ON.code)}<span class="k">${G && (G.online||G.isView) ? 'game in progress' : 'lobby'}</span></button>` : ''}
@@ -4860,7 +4856,7 @@ function viewTitle(){
         <button class="btn" data-act="go" data-screen="tutorial">Tutorial<span class="k">learn to play, then a guided game</span></button>
         <button class="btn" data-act="go" data-screen="${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? 'social' : 'profile'}">Social<span class="k">${ACCT && SO.incoming ? SO.incoming+' friend request'+(SO.incoming===1?'':'s') : ACCT && SO.data && SO.data.invites && SO.data.invites.length ? 'you have an invite' : (()=>{ const st = profileStats(); return (PROFILE.emoji ? esc(PROFILE.emoji)+' ' : '') + (st.played ? 'profile '+st.wins+'\u2013'+st.losses+(st.draws?'\u2013'+st.draws:'')+' \u00B7 friends' : 'profile, friends, invites'); })()}</span>${ACCT && (SO.incoming || (SO.data && SO.data.invites && SO.data.invites.length)) ? '<span class="so-dot" aria-hidden="true"></span>' : ''}</button>
         <button class="btn" data-act="go" data-screen="replay">Replay<span class="k">watch a game again \u00B7 everyone\u2019s stats</span></button>
-        <button class="btn" data-act="go" data-screen="studio">${isAdmin() ? 'Studio' : '\u{1F512} Studio'}<span class="k">${isAdmin() ? 'cards, planets, decks, art &amp; data' : 'admin only'}</span></button>
+        <button class="btn" data-act="go" data-screen="studio">Studio<span class="k">${isAdmin() ? 'cards, planets, decks, art &amp; data' : 'browse cards, planets &amp; decks'}</span></button>
         <button class="btn ghost" data-act="go" data-screen="rules">Full rules</button>
       </div>
     </div>
@@ -6140,7 +6136,7 @@ async function adminUnlock(pw){
   ADM.busy = true; ADM.err = ''; render();
   try{
     const r = await adminCall('POST', '/api/admin/login', {password: pw});
-    ADM.token = r.token; ADM.ok = true; ADM.checked = true;
+    ADM.token = r.token; ADM.ok = true; ADM.checked = true; UI.admGate = false;
     try{ localStorage.setItem(ADMIN_KEY, r.token); }catch(e){}
     toast('Studio unlocked.');
   }catch(e){ ADM.err = e.message || 'That didn\u2019t work.'; }
@@ -6151,13 +6147,13 @@ function adminLock(){
   if(ADM.token) adminCall('POST', '/api/admin/logout').catch(()=>{});
   ADM.token = null; ADM.ok = false;
   try{ localStorage.removeItem(ADMIN_KEY); }catch(e){}
-  if(UI.screen==='studio'){ UI.screen = 'title'; }
-  toast('Studio locked on this browser.');
+  UI.admGate = false;
+  toast('Studio locked on this browser \u2014 it\u2019s read only now.');
   render();
 }
 function viewAdminGate(){
   const online = accountsAvailable();
-  return `${topbar('Studio')}
+  return `${topbar('Studio', `<button class="btn sm ghost" data-act="admclose">Back to read only</button>`)}
   <div class="page stack admin-gate">
     <div class="card-panel stack" style="max-width:440px">
       <div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap"><span class="ag-lock" aria-hidden="true">\u{1F512}</span>
@@ -6171,9 +6167,24 @@ function viewAdminGate(){
     </div>
   </div>`;
 }
+/* Without the admin password the Studio still opens, read only: cards, tokens,
+   planets and decks can be looked through, nothing can be changed. */
+const RO_TABS = ['cards','tokens','planets','decks'];
+const RO_ACTS = new Set(['tab','pickcard','pickdeck','pickplanet','cfsort','cfopen','cfchip','cfclear','go','home','theme','admopen','admclose','admunlock','admlock','closesheet','peek','peekdef']);
+const studioReadOnly = () => UI.screen==='studio' && !isAdmin();
+/** After drawing the read-only Studio: every field shows its value but can't be changed, and edit buttons are gone. */
+function lockStudioPage(){
+  const root = document.querySelector('#app .studio-ro');
+  if(!root) return;
+  root.querySelectorAll('input,select,textarea').forEach(el=>{ if(el.closest('.cf-bar')) return; el.disabled = true; el.setAttribute('aria-readonly','true'); });
+  root.querySelectorAll('[data-act]').forEach(el=>{ if(!RO_ACTS.has(el.dataset.act)) el.classList.add('ro-hide'); });
+  root.querySelectorAll('[data-up],[data-drag]').forEach(el=>{ (el.closest('label')||el).classList.add('ro-hide'); el.removeAttribute('data-drag'); });
+}
 function viewStudio(){
-  if(!isAdmin()) return viewAdminGate();
-  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']];
+  if(!isAdmin() && UI.admGate) return viewAdminGate();
+  const ro = !isAdmin();
+  if(ro && !RO_TABS.includes(studioTab)) studioTab = 'cards';
+  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']].filter(([k])=>!ro || RO_TABS.includes(k));
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
     `<button class="chip ${studioTab===k?'on':''}" data-act="tab" data-v="${k}">${l}${k==='cards'&&flagged?` <span class="flagdot">${flagged}</span>`:''}</button>`).join('')}</div>`;
@@ -6182,6 +6193,8 @@ function viewStudio(){
              : studioTab==='art'     ? spritesBody()
              : studioTab==='decks'   ? decksBody()
              : cardStudio(studioTab==='tokens');
+  if(ro) return `${topbar('Studio', `<button class="btn sm" data-act="admopen" title="Unlock editing with the admin password">\u{1F512} Admin</button>`)}<div class="page stack studio-ro">
+    <div class="ro-note" role="note">\u{1F441} <b>Read only.</b> Look through every card, planet and deck; only an admin can change them.</div>${bar}${body}</div>`;
   return `${topbar('Studio', `<button class="btn sm ghost" data-act="admlock" title="Lock the Studio on this browser">\u{1F513} Lock</button>`)}<div class="page stack">${bar}${body}</div>`;
 }
 
@@ -7172,6 +7185,7 @@ document.addEventListener('click', e=>{
 
   if(justDragged()) return;                       // the drag already did the work
   if(BOARD_ACTS[a] && (UI.transition || UI.flipAnim)) return;
+  if(studioReadOnly() && !RO_ACTS.has(a) && !t.closest('.topbar')) return;      // read-only Studio: looking only
 
   switch(a){
     /* navigation */
@@ -7191,6 +7205,8 @@ document.addEventListener('click', e=>{
     case 'pftab': UI.pfTab = t.dataset.v; render(); break;
     case 'admunlock': { const el = document.querySelector('[data-adm="pw"]'); const v = el ? el.value : ''; if(v) adminUnlock(v); else { ADM.err = 'Type the admin password.'; render(); } break; }
     case 'admlock': adminLock(); break;
+    case 'admopen': UI.admGate = true; ADM.err = ''; render(); break;
+    case 'admclose': UI.admGate = false; render(); break;
     case 'pfemoji': setProfileEmoji(t.dataset.v); render(); break;
     case 'soreload': SO.data = null; soLoad(); render(); break;
     case 'souser': if(e.target.closest('[data-act="soinvite"]')) break; soOpenUser(t.dataset.u); break;
@@ -7519,6 +7535,7 @@ document.addEventListener('click', e=>{
 
 function onEdit(e, isChange){
   const el = e.target;
+  if(studioReadOnly() && !el.closest('.cf-bar')) return;
   const d = el.dataset;
   let structural = false;
 
@@ -7673,6 +7690,7 @@ function readImage(file, cb){
 document.addEventListener('change', e=>{
   const el = e.target;
   if(!el.dataset.up) return;
+  if(studioReadOnly()) return;
   const file = el.files && el.files[0];
   if(!file) return;
   const kind = el.dataset.up;
