@@ -149,6 +149,7 @@ export class Account extends DurableObject {
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     const user = await this.ctx.storage.get('user');
     const prof = (await this.ctx.storage.get('profile')) || {};
+    await this.ctx.storage.put('seen', Date.now());          // for the admin's user list
     return { username: user.username, name: prof.name || user.username, emoji: prof.emoji || '', games: (await this.games()).map(summary) };
   }
   /** Change the display name and/or the profile emoji (either may be left out). */
@@ -364,6 +365,37 @@ export class Account extends DurableObject {
     await this.ctx.storage.put('sessions', list);
     return { ok: true };
   }
+  /* --- what the admin's Users tab sees (never the password hash or session secrets) --- */
+  async adminSummary(){
+    const u = await this.ctx.storage.get('user');
+    if(!u) return null;
+    const prof = (await this.ctx.storage.get('profile')) || {};
+    const games = await this.games();
+    const n = k => games.filter(x => x.result === k).length;
+    const rel = await this.rel();
+    const sessions = (await this.ctx.storage.get('sessions')) || [];
+    return { user: u.username, name: prof.name || u.username, emoji: prof.emoji || '', created: u.created || null,
+             seen: (await this.ctx.storage.get('seen')) || (sessions.length ? Math.max(...sessions.map(x => x.at || 0)) : null),
+             record: { played: games.length, wins: n('win'), losses: n('loss'), draws: n('draw') },
+             lastGame: games.length ? games[0].at : null, friends: rel.friends.length, sessions: sessions.length };
+  }
+  async adminDetail(){
+    const base = await this.adminSummary();
+    if(!base) return { error: 'No such player.', status: 404 };
+    const rel = await this.rel();
+    const games = (await this.games()).map(summary);
+    const keys = games.slice(0, 128).map(g => 'c:' + g.id);
+    const cm = keys.length ? await this.ctx.storage.get(keys) : new Map();
+    games.forEach(g => { const c = cm.get('c:' + g.id); g.comments = c ? c.length : 0; });
+    const sessions = ((await this.ctx.storage.get('sessions')) || []).map(x => ({ at: x.at }));
+    return Object.assign(base, { friendList: rel.friends, incoming: rel.incoming, outgoing: rel.outgoing, invites: rel.invites, sessionList: sessions, games });
+  }
+  async dirAll(after, limit){
+    const opts = { prefix: 'u:', limit: Math.min(200, limit || 100) };
+    if(after) opts.startAfter = 'u:' + after;
+    const out = await this.ctx.storage.list(opts);
+    return [...out.keys()].map(k => k.slice(2));
+  }
   async statsGet(){ return publicStats((await this.ctx.storage.get('stats')) || freshStats()); }
 
   async clearGames(secret){
@@ -440,6 +472,7 @@ async function adminRoute(request, env, p, stubFor, json, body){
   const secretPw = env.ADMIN_PASSWORD;
   if(!secretPw) return json({ error: 'No admin password has been set on the server yet.', unset: true }, 503);
   const fp = (await sha256('territory-admin:' + secretPw)).slice(0, 24);
+  const reply = r => r && r.error ? json({ error: r.error }, r.status || 400) : json(r);
   const gate = stubFor(ADMIN);
   const ip = request.headers.get('CF-Connecting-IP') || 'local';
   if(p === '/api/admin/login' && request.method === 'POST'){
@@ -454,6 +487,21 @@ async function adminRoute(request, env, p, stubFor, json, body){
   const secret = auth.startsWith('admin.') ? auth.slice(6) : '';
   if(p === '/api/admin' && request.method === 'GET')
     return (secret && await gate.adminCheck(secret, fp)) ? json({ admin: true }) : json({ error: 'Not an admin session.' }, 401);
+  /* everything below needs an admin session */
+  const am = p.match(/^\/api\/admin\/users(?:\/([a-z0-9_-]{3,20})(?:\/games\/([A-Za-z0-9]{4,40}))?)?$/);
+  if(am && request.method === 'GET'){
+    if(!(secret && await gate.adminCheck(secret, fp))) return json({ error: 'Not an admin session.' }, 401);
+    if(!am[1]){
+      /* every listed account, a page at a time (100), each with its summary */
+      const url = new URL(request.url);
+      const names = await stubFor(DIRECTORY).dirAll(url.searchParams.get('after') || '', 100);
+      const users = (await Promise.all(names.map(n => stubFor(n).adminSummary().catch(() => null)))).filter(Boolean);
+      return json({ users, next: names.length === 100 ? names[names.length - 1] : null });
+    }
+    const st = stubFor(am[1]);
+    if(!am[2]) return reply(await st.adminDetail());
+    return reply(await st.publicGame(am[2]));
+  }
   if(p === '/api/admin/logout' && request.method === 'POST'){ if(secret) await gate.adminClose(secret); return json({ ok: true }); }
   return json({ error: 'Not found.' }, 404);
 }

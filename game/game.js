@@ -4809,7 +4809,7 @@ function render(){
   }
   maybeWinFx();
   /* a redraw while someone is typing keeps them in the same box, caret and all */
-  const ae = document.activeElement, keyAttr = ae && ae.dataset && ['so','pf','onInput'].find(k=>ae.dataset[k]);
+  const ae = document.activeElement, keyAttr = ae && ae.dataset && ['so','pf','onInput','au'].find(k=>ae.dataset[k]);
   const keep = keyAttr ? {sel:`[data-${keyAttr.replace(/[A-Z]/g, m=>'-'+m.toLowerCase())}="${ae.dataset[keyAttr]}"]`, a:ae.selectionStart, b:ae.selectionEnd} : null;
   $('#app').innerHTML = html;
   $('#overlay').innerHTML = viewOverlays() + (UI.rp && UI.screen==='game' ? replayBarHTML() : '') + (UI.screen==='game' && G && G.tutorial ? tutCoachHTML() : '');
@@ -5789,6 +5789,7 @@ function viewOverlays(){
   if(UI.sheet==='hist' && UI.screen==='profile') return out + historySheetHTML();
   if(UI.sheet==='rplog' && UI.screen==='replay') return out + rpLogSheetHTML();
   if(UI.sheet==='pgame' && UI.screen==='player') return out + playerGameSheetHTML();
+  if(UI.sheet==='augame' && UI.screen==='studio' && isAdmin()) return out + adminGameSheetHTML();
   if(UI.sheet==='log' && G){
     const items = G.log.slice(-160).map(l=> l.rd
       ? `<div class="rd">${esc(l.t)}</div>`
@@ -6206,11 +6207,103 @@ function lockStudioPage(){
   root.querySelectorAll('[data-act]').forEach(el=>{ if(!RO_ACTS.has(el.dataset.act)) el.classList.add('ro-hide'); });
   root.querySelectorAll('[data-up],[data-drag]').forEach(el=>{ (el.closest('label')||el).classList.add('ro-hide'); el.removeAttribute('data-drag'); });
 }
+/* --- Users (admin only): every registered player and what's kept for them --- */
+const AU = { list:null, next:null, loading:false, err:'', q:'', sort:'seen', open:null, detail:null, dErr:'', game:null };
+async function auLoad(more){
+  if(AU.loading) return;
+  AU.loading = true; AU.err = ''; render();
+  try{
+    const r = await adminCall('GET', '/api/admin/users' + (more && AU.next ? '?after='+encodeURIComponent(AU.next) : ''));
+    AU.list = more ? (AU.list||[]).concat(r.users) : r.users; AU.next = r.next;
+  }catch(e){ AU.err = e.status===401 ? 'Your admin session has ended \u2014 unlock the Studio again.' : (e.message || 'Could not load the users.'); if(e.status===401) adminLock(); }
+  AU.loading = false; render();
+}
+async function auOpen(user){
+  AU.open = user; AU.detail = null; AU.dErr = ''; render();
+  try{ AU.detail = await adminCall('GET', '/api/admin/users/'+encodeURIComponent(user)); }
+  catch(e){ AU.dErr = e.message || 'Could not load that player.'; }
+  render();
+}
+async function auGame(user, id){
+  SO.gameOwner = user; SO.prof = {name: (AU.detail && AU.detail.name) || user}; SO.game = {id, loading:true}; SO.comments = null;
+  UI.sheet = 'augame'; render();
+  try{ const r = await adminCall('GET', `/api/admin/users/${encodeURIComponent(user)}/games/${encodeURIComponent(id)}`); SO.game = r.game; SO.comments = r.comments; }
+  catch(e){ SO.game = {id, error: e.message || 'Could not load that game.'}; }
+  render();
+}
+const auWhen = t => t ? whenText2(t) : '\u2014';
+function usersBody(){
+  if(!AU.list && !AU.loading && !AU.err) auLoad();
+  if(AU.open) return userDetailHTML();
+  const q = AU.q.trim().toLowerCase();
+  const rows = (AU.list||[]).filter(u=>!q || u.user.includes(q) || String(u.name||'').toLowerCase().includes(q));
+  const key = {seen:u=>-(u.seen||0), created:u=>-(u.created||0), games:u=>-(u.record.played), name:u=>0}[AU.sort];
+  rows.sort((a,b)=> AU.sort==='name' ? a.user.localeCompare(b.user) : (key(a)-key(b)) || a.user.localeCompare(b.user));
+  const chip = (k,l) => `<button class="chip ${AU.sort===k?'on':''}" data-act="ausort" data-v="${k}">${l}</button>`;
+  return `<div class="stack au">
+    <p class="tiny muted" style="margin:0">Every account that has signed in or opened the game since search arrived (0.8). Passwords are never shown \u2014 only a hash of each is kept. ${AU.list ? `<b>${AU.list.length}${AU.next?'+':''}</b> accounts.` : ''}</p>
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <input type="search" data-au="q" placeholder="Filter by name or username" value="${esc(AU.q)}" style="flex:1;min-width:160px" aria-label="Filter users">
+      ${chip('seen','Last seen')}${chip('created','Newest')}${chip('games','Most games')}${chip('name','Username')}
+      <button class="btn sm ghost" data-act="aureload" aria-label="Refresh">\u21BB</button>
+    </div>
+    ${AU.err ? `<div class="acct-err">${esc(AU.err)}</div>` : ''}
+    ${!AU.list && AU.loading ? '<div class="net-wait"><span class="spinner"></span>Loading every account\u2026</div>' : ''}
+    ${AU.list ? (rows.length ? `<div class="st-table au-table" role="table">
+      <div class="st-tr st-th" role="row"><span>Player</span><span>Games</span><span>Friends</span><span>Last seen</span><span>Joined</span></div>
+      ${rows.map(u=>`<button class="st-tr au-row" role="row" data-act="auopen" data-u="${esc(u.user)}">
+        <span class="st-nm">${u.emoji?esc(u.emoji)+' ':''}${esc(u.name)}<small>@${esc(u.user)}</small></span>
+        <span>${u.record.played}<small>${u.record.wins}\u2013${u.record.losses}${u.record.draws?'\u2013'+u.record.draws:''}</small></span>
+        <span>${u.friends}</span><span><small>${auWhen(u.seen)}</small></span><span><small>${auWhen(u.created)}</small></span></button>`).join('')}
+    </div>` : '<div class="empty-note">No accounts match.</div>') : ''}
+    ${AU.next ? `<button class="btn sm" data-act="aumore" ${AU.loading?'disabled':''}>Load more</button>` : ''}
+  </div>`;
+}
+function userDetailHTML(){
+  const d = AU.detail;
+  const back = `<button class="btn sm ghost" data-act="auback" style="align-self:flex-start">\u2190 All users</button>`;
+  if(AU.dErr) return `<div class="stack">${back}<div class="acct-err">${esc(AU.dErr)}</div></div>`;
+  if(!d) return `<div class="stack">${back}<div class="net-wait"><span class="spinner"></span>Loading @${esc(AU.open)}\u2026</div></div>`;
+  const r = d.record, tile = (n, label, cls) => `<div class="pf-tile ${cls||''}"><b>${n}</b><span>${label}</span></div>`;
+  const people = list => list.length ? list.map(x=>`<button class="chip" data-act="auopen" data-u="${esc(x.user||x)}">@${esc(x.user||x)}${x.at?` \u00B7 ${auWhen(x.at)}`:''}</button>`).join(' ') : '<span class="tiny muted">none</span>';
+  const games = d.games.map(g=>{
+    const opp = g.players.filter((_,i)=>i!==g.seat).map(o=>esc(o.name)+(o.bot?' <i>(bot)</i>':'')).join(', ');
+    return `<button class="pf-game" data-act="augame" data-u="${esc(d.user)}" data-id="${esc(g.id)}">
+      <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
+      <span class="pf-main"><b>vs ${opp||'nobody'}</b><span>${g.mode==='online'?'Online':'Local'} \u00B7 ${whenText2(g.at)}${g.comments?` \u00B7 \u{1F4AC} ${g.comments}`:''}${g.hasReplay?' \u00B7 \u25B6':''}</span></span>
+      <span class="pf-score">${scoreLine(g)}<small>planets</small></span></button>`;
+  }).join('');
+  return `<div class="stack au-detail">
+    ${back}
+    <div class="card-panel acct-card in"><div class="row" style="gap:10px;align-items:center;flex-wrap:nowrap">
+      ${avatarHTML(d.emoji, d.name)}
+      <div class="acct-who" style="flex:1"><b>${esc(d.name)}</b><span>@${esc(d.user)} \u00B7 joined ${auWhen(d.created)} \u00B7 last seen ${auWhen(d.seen)}</span></div></div></div>
+    <div class="pf-tiles">${tile(r.played,'played')}${tile(r.wins,'wins','win')}${tile(r.losses,'losses','loss')}${tile(r.draws,'draws')}${tile(r.played?Math.round(100*r.wins/r.played)+'%':'\u2014','win rate')}</div>
+    <div class="au-facts">
+      <div><span class="sb-label">Friends (${d.friendList.length})</span><div>${people(d.friendList)}</div></div>
+      <div><span class="sb-label">Requests to them</span><div>${people(d.incoming)}</div></div>
+      <div><span class="sb-label">Requests they sent</span><div>${people(d.outgoing)}</div></div>
+      <div><span class="sb-label">Signed in on</span><div class="tiny">${d.sessionList.length} browser${d.sessionList.length===1?'':'s'}${d.sessionList.length?' \u00B7 latest '+auWhen(Math.max(...d.sessionList.map(x=>x.at||0))):''}</div></div>
+    </div>
+    <div class="section-head"><h3>Match history</h3><p>${d.games.length} game${d.games.length===1?'':'s'} \u00B7 tap for the log, comments and replay</p></div>
+    ${games ? `<div class="pf-list">${games}</div>` : '<div class="empty-note">No games yet.</div>'}
+  </div>`;
+}
+/** A player's game as the admin sees it: planets, log, replay, and every comment (read only). */
+function adminGameSheetHTML(){
+  const html = playerGameSheetHTML();
+  const list = SO.comments;
+  if(!list || !SO.game || SO.game.loading || SO.game.error) return html;
+  const cm = `<div class="sb-label" style="margin-top:14px">Comments \u00B7 ${list.length}</div><div class="so-comments">${list.length ? list.map(c=>`<div class="so-comment"><div class="row" style="gap:6px;align-items:baseline;flex-wrap:nowrap"><b>${esc(c.name)}</b><span class="tiny muted">@${esc(c.author)} \u00B7 ${whenText2(c.at)}</span></div><p>${esc(c.text)}</p></div>`).join('') : '<div class="empty-note">No comments.</div>'}</div>`;
+  return html.replace('<div class="sb-label" style="margin-top:14px">Game log</div>', cm + '<div class="sb-label" style="margin-top:14px">Game log</div>');
+}
 function viewStudio(){
   if(!isAdmin() && UI.admGate) return viewAdminGate();
   const ro = !isAdmin();
   if(ro && !RO_TABS.includes(studioTab)) studioTab = 'cards';
-  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']].filter(([k])=>!ro || RO_TABS.includes(k));
+  if(ro && studioTab==='users') studioTab = 'cards';
+  const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']].filter(([k])=>!ro || RO_TABS.includes(k))
+    .concat(ro || !accountsAvailable() ? [] : [['users','\u{1F465} Users']]);           // admin only
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
     `<button class="chip ${studioTab===k?'on':''}" data-act="tab" data-v="${k}">${l}${k==='cards'&&flagged?` <span class="flagdot">${flagged}</span>`:''}</button>`).join('')}</div>`;
@@ -6218,6 +6311,7 @@ function viewStudio(){
              : studioTab==='import'  ? importStudio()
              : studioTab==='art'     ? spritesBody()
              : studioTab==='decks'   ? decksBody()
+             : studioTab==='users'   ? usersBody()
              : cardStudio(studioTab==='tokens');
   if(ro) return `${topbar('Studio', `<button class="btn sm" data-act="admopen" title="Unlock editing with the admin password">\u{1F512} Admin</button>`)}<div class="page stack studio-ro">
     <div class="ro-note" role="note">\u{1F441} <b>Read only.</b> Look through every card, planet and deck; only an admin can change them.</div>${bar}${body}</div>`;
@@ -7235,6 +7329,12 @@ document.addEventListener('click', e=>{
     case 'admunlock': { const el = document.querySelector('[data-adm="pw"]'); const v = el ? el.value : ''; if(v) adminUnlock(v); else { ADM.err = 'Type the admin password.'; render(); } break; }
     case 'admlock': adminLock(); break;
     case 'admopen': UI.admGate = true; ADM.err = ''; render(); break;
+    case 'aureload': AU.list = null; AU.next = null; auLoad(); break;
+    case 'aumore': auLoad(true); break;
+    case 'ausort': AU.sort = t.dataset.v; render(); break;
+    case 'auopen': UI.sheet = null; auOpen(t.dataset.u); window.scrollTo(0,0); break;
+    case 'auback': AU.open = null; AU.detail = null; render(); break;
+    case 'augame': auGame(t.dataset.u, t.dataset.id); break;
     case 'admclose': UI.admGate = false; render(); break;
     case 'pfemoji': setProfileEmoji(t.dataset.v); render(); break;
     case 'soreload': SO.data = null; soLoad(); render(); break;
@@ -9275,6 +9375,7 @@ function historySheetHTML(){
 }
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
 document.addEventListener('change', e=>{ if(e.target.dataset && e.target.dataset.pf==='emoji'){ setProfileEmoji(e.target.value); render(); } });
+document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.au==='q'){ AU.q = e.target.value; render(); } });
 document.addEventListener('input', e=>{ const k = e.target.dataset && e.target.dataset.so; if(!k) return;
   if(k==='q') soSearch(e.target.value); else if(k==='draft') SO.draft = e.target.value; });
 document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.so==='draft'){ e.preventDefault(); soComment(); } });

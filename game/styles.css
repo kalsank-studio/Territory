@@ -1371,3 +1371,11 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
   background:color-mix(in srgb,var(--ui-accent) 12%,var(--ui-panel));border:1px solid color-mix(in srgb,var(--ui-accent) 45%,var(--ui-line));color:var(--ui-text);font-size:14px;line-height:1.4;cursor:pointer}
 .signin-nudge b{color:var(--ui-text)}
 .signin-nudge .sn-go{margin-left:auto;font-size:20px;color:var(--ui-dim)}
+/* Studio → Users (admin) */
+.au-table .st-tr{grid-template-columns:minmax(0,1.6fr) .8fr .6fr 1fr 1fr}
+.au-row{width:100%;text-align:left;background:transparent;border:none;border-top:1px solid var(--ui-line);cursor:pointer;font:inherit}
+.au-row:hover{background:var(--ui-panel)}
+.au-row small{display:block;font-size:11.5px;color:var(--ui-dim)}
+.au-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.au-facts > div{display:flex;flex-direction:column;gap:6px}
+.au-facts .chip{font-size:12px}
