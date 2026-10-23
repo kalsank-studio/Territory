@@ -8042,6 +8042,7 @@ function onMessage(m){
     ON.seat = m.seat; ON.token = m.token; ON.seats = m.seats; if(m.size) ON.roomSeats = m.size;
     ON.role = m.seat===0 ? 'host' : 'guest';
     ON.status = 'open'; ON.retries = 0; ON.error = '';
+    if(ON.role==='host'){ LS.posted = ''; setTimeout(()=>postListing(true), 200); }
     rememberRoom();
     clearInterval(ON.pingT);
     ON.lastPong = Date.now();
@@ -8093,7 +8094,7 @@ function defaultLobby(n){
   return { seats: Array.from({length:n}, (_,i)=>({deck:(LIB.settings.deckOf[i] && decks.some(d=>d.id===LIB.settings.deckOf[i])) ? LIB.settings.deckOf[i] : decks[Math.min(i, decks.length-1)].id})),
            planets: LIB.settings.planets||5, rounds: LIB.settings.rounds||6,
            turnTimer: LIB.settings.turnTimer||0, choiceTimer: LIB.settings.choiceTimer||30, sandbox: false, mulligan: LIB.settings.mulligan!==false,
-           sharedDeck: !!LIB.settings.sharedDeck, sharedDeckId: (decks.some(d=>d.id===LIB.settings.sharedDeckId) ? LIB.settings.sharedDeckId : decks[0].id) };
+           private: false, sharedDeck: !!LIB.settings.sharedDeck, sharedDeckId: (decks.some(d=>d.id===LIB.settings.sharedDeckId) ? LIB.settings.sharedDeckId : decks[0].id) };
 }
 function lobbyPayload(){
   return {t:'lobby', lobby:ON.lobby, decks:LIB.decks.map(d=>({id:d.id, name:d.name, n:d.cards.length})), playing: !!(G && G.online && !G.over)};
@@ -8101,6 +8102,7 @@ function lobbyPayload(){
 /** Bring every guest up to date: the lobby before a game, views during one. */
 function hostSync(){
   if(!isHost()) return;
+  postListing();
   if(G && G.online) hostBroadcast();
   else relay({data:lobbyPayload()}, 'all');
 }
@@ -8134,12 +8136,14 @@ function startOnlineGame(){
   newGame({online:true, players:n, kinds, names, emojis, deckOf:L.seats.map(s=>s.deck), sharedDeck:!!L.sharedDeck, sharedDeckId:L.sharedDeckId, planets:L.planets, rounds:L.rounds,
            sandbox:!!L.sandbox, mulligan:L.mulligan!==false, hide:false, placement:'simultaneous'});
   hostBroadcast();
+  postListing(true);
 }
 /** Back to the lobby after a game, everyone together. */
 function hostBackToLobby(){
   G = null; UI.screen = 'online'; UI.review = false;
   try{ localStorage.removeItem(HOSTGAME_KEY); }catch(e){}
   relay({data:Object.assign(lobbyPayload(), {reset:true})}, 'all');
+  postListing(true);
   render();
 }
 
@@ -8419,10 +8423,63 @@ function viewOnline(){
           <input data-on-input="code" class="code-input" maxlength="5" placeholder="ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc(ON.joinCode||'')}"></label>
         <button class="btn primary" data-on="join" style="flex:1">Join</button>
       </div>
+      ${lobbySearchHTML()}
     </div>
     <p class="tiny muted" style="margin-top:-4px">Online, everyone places at once on their own device, then cards turn over in order. Decks come from the host\u2019s library.</p>
     ${localCardHTML()}
   </div>`;
+}
+
+/* --- the lobby search ------------------------------------------------------
+   Public rooms with a free seat, waiting to start, host present. Refreshed
+   every 10 seconds while the Play screen is open. */
+const LS = { list:null, at:0, loading:false, err:'', t:null, posted:'', postT:null };
+async function lsLoad(){
+  if(LS.loading) return;
+  LS.loading = true; LS.err = '';
+  try{
+    const r = await fetch(location.origin + '/api/lobbies');
+    if(!r.ok) throw new Error(r.status===404 ? 'The lobby search isn\u2019t on the server yet \u2014 upload the new server files.' : 'Couldn\u2019t reach the server.');
+    LS.list = (await r.json()).lobbies || [];
+  }catch(e){ LS.err = e.message || 'Couldn\u2019t reach the server.'; }
+  LS.loading = false; LS.at = Date.now();
+  if(UI.screen==='online' && !inRoom()) render();
+  clearTimeout(LS.t);
+  LS.t = setTimeout(()=>{ if(UI.screen==='online' && !inRoom()) lsLoad(); }, 10000);
+}
+function lobbySearchHTML(){
+  if(!LS.loading && Date.now() - LS.at > 9000) setTimeout(lsLoad, 0);
+  const rows = (LS.list||[]).map(l=>{
+    const open = l.seats - l.taken;
+    const bits = [`${l.taken}/${l.seats} players`, `${l.planets||5} planets`, `${l.rounds||6} rounds`].concat(l.sharedDeck?['shared deck']:[], l.sandbox?['sandbox']:[]);
+    return `<div class="ls-row">
+      <span class="acct-badge sm ${l.emoji?'emo':''}" aria-hidden="true">${esc(avatarText(l.emoji, l.host))}</span>
+      <span class="ls-main"><b>${esc(l.host)}\u2019s room</b><small>${bits.map(esc).join(' \u00B7 ')}</small></span>
+      <button class="btn sm primary" data-on="joinlisted" data-code="${esc(l.code)}" aria-label="Join ${esc(l.host)}'s room, ${open} seat${open===1?'':'s'} free">Join</button>
+    </div>`;
+  }).join('');
+  return `<div class="ls">
+    <div class="ls-head"><span class="sb-label" style="margin:0">Open lobbies</span>
+      <button class="btn sm ghost" data-on="lsrefresh" aria-label="Refresh the list">${LS.loading ? '<span class="spinner"></span>' : '\u21BB'}</button></div>
+    ${LS.err ? `<div class="tiny muted">${esc(LS.err)}</div>`
+      : LS.list == null ? '<div class="tiny muted">Looking for open rooms\u2026</div>'
+      : rows ? `<div class="ls-list">${rows}</div>` : '<div class="tiny muted">No open rooms right now. Host one, or ask a friend for their code.</div>'}
+  </div>`;
+}
+/** The host tells the server whether this room shows in the search, and what it's playing. */
+function postListing(force){
+  if(!isHost() || !ON.code || !ON.token || !ON.lobby) return;
+  const L = ON.lobby;
+  const info = {public: !L.private, playing: !!(G && G.online && !G.over), planets: L.planets, rounds: L.rounds,
+                sandbox: !!L.sandbox, sharedDeck: !!L.sharedDeck, emoji: PROFILE.emoji || ''};
+  const key = JSON.stringify(info);
+  if(!force && key===LS.posted) return;
+  LS.posted = key;
+  clearTimeout(LS.postT);
+  LS.postT = setTimeout(()=>{
+    fetch(location.origin + '/api/rooms/' + encodeURIComponent(ON.code) + '/listing', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(Object.assign({token: ON.token}, info))}).catch(()=>{ LS.posted = ''; });
+  }, force ? 0 : 300);
 }
 
 /** Friends to invite, in the host's lobby. */
@@ -8473,6 +8530,10 @@ function viewLobby(){
     </div>
     ${L.sharedDeck ? `<label class="field"><span>Shared deck \u2014 once per player, shuffled together</span>
       <select data-on-input="shareddeck">${opts(decks.map(d=>d.id), L.sharedDeckId, id=>{ const d = decks.find(x=>x.id===id); return esc(d.name)+' ('+d.n+')'; })}</select></label>` : ''}
+    <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
+      <input type="checkbox" data-on-input="private" ${L.private?'checked':''} style="width:auto">
+      <span class="tiny"><b>Private lobby</b> \u2014 hidden from the lobby search. Friends join with the code, the link or an invite.</span>
+    </label>
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-on-input="mulligan" ${L.mulligan!==false?'checked':''} style="width:auto">
       <span class="tiny">One mulligan each in round 1</span>
@@ -8536,6 +8597,8 @@ document.addEventListener('click', e=>{
     case 'forget': forgetRoom(); render(); break;
     case 'leave': leaveRoom(); UI.screen = 'online'; render(); break;
     case 'start': if(isHost()) startOnlineGame(); break;
+    case 'lsrefresh': lsLoad(); render(); break;
+    case 'joinlisted': if(!onlineName()) return askName(); ON.joinCode = t.dataset.code; ON.role = 'guest'; joinRoom(t.dataset.code); break;
     case 'deckmode': if(isHost() && ON.lobby){ ON.lobby.sharedDeck = t.dataset.v==='shared'; LIB.settings.sharedDeck = ON.lobby.sharedDeck; saveSoon(); hostSync(); render(); } break;
     case 'copylink': copyText(t.dataset.v, 'Invite link'); break;
     case 'share': navigator.share({title:'Territory', text:'Join my game of Territory: room '+ON.code, url:t.dataset.v}).catch(()=>{}); break;
@@ -8565,7 +8628,7 @@ document.addEventListener('change', e=>{
     else { ON.lobby.seats[i].deck = el.value; relay({data:{t:'deck', id:el.value}}); }
     render(); return;
   }
-  if(isHost() && ON.lobby && (k==='sandbox' || k==='mulligan')){ ON.lobby[k] = el.checked; hostSync(); render(); return; }
+  if(isHost() && ON.lobby && (k==='sandbox' || k==='mulligan' || k==='private')){ ON.lobby[k] = el.checked; hostSync(); if(k==='private') postListing(true); render(); return; }
   if(isHost() && ON.lobby && k==='shareddeck'){ ON.lobby.sharedDeckId = el.value; LIB.settings.sharedDeckId = el.value; saveSoon(); hostSync(); render(); return; }
   if(isHost() && ON.lobby && ['planets','rounds','turnTimer','choiceTimer'].includes(k)){ ON.lobby[k] = +el.value; hostSync(); render(); }
 });

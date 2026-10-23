@@ -396,6 +396,21 @@ export class Account extends DurableObject {
     const out = await this.ctx.storage.list(opts);
     return [...out.keys()].map(k => k.slice(2));
   }
+  /* --- the open-lobby list (the "~lobbies" object); each room keeps its own entry current */
+  async lobbyPut(code, entry){
+    if(entry) await this.ctx.storage.put('l:' + code, entry); else await this.ctx.storage.delete('l:' + code);
+    return { ok: true };
+  }
+  async lobbyList(){
+    const all = await this.ctx.storage.list({ prefix: 'l:' });
+    const now = Date.now(), out = [], stale = [];
+    for(const [k, v] of all){
+      if(now - (v.updated || 0) > 6 * 3600e3){ stale.push(k); continue; }       // a room nobody has touched in six hours
+      if(v.public && !v.playing && v.hostHere && v.taken < v.seats) out.push(v);
+    }
+    if(stale.length) await this.ctx.storage.delete(stale.slice(0, 128));
+    return out.sort((a, b) => b.updated - a.updated).slice(0, 50);
+  }
   async statsGet(){ return publicStats((await this.ctx.storage.get('stats')) || freshStats()); }
 
   async clearGames(secret){

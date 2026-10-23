@@ -72,6 +72,18 @@ export default {
       return json({ error: 'Could not find a free room code. Try again.' }, 503);
     }
 
+    if(url.pathname === '/api/lobbies' && request.method === 'GET'){
+      const reg = env.ACCOUNTS.get(env.ACCOUNTS.idFromName('~lobbies'));
+      return json({ lobbies: await reg.lobbyList() });
+    }
+    const lm = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9]+)\/listing\/?$/);
+    if(lm && request.method === 'POST'){
+      let b = {};
+      try{ b = await request.json(); }catch(e){}
+      const r = await roomFor(env, cleanCode(lm[1])).setListing(String(b.token || ''), b);
+      return r.error ? json({ error: r.error }, r.status || 400) : json(r);
+    }
+
     const m = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9]+)(\/socket)?\/?$/);
     if(m){
       const code = cleanCode(m[1]);
@@ -116,6 +128,34 @@ export class Room extends DurableObject {
     return true;
   }
 
+  /* --- the lobby search ------------------------------------------------
+     The host says whether the room is public and what it's playing; the room
+     itself knows how many seats are left and whether the host is here, and
+     keeps the shared list (one more object, "~lobbies") up to date. */
+  async setListing(token, info){
+    const holders = (await this.ctx.storage.get('holders')) || [];
+    const host = holders.find(h => h.seat === 0);
+    if(!host || !token || host.token !== token) return { error: 'Only the host can list this room.', status: 403 };
+    const clean = v => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, '').slice(0, 40);
+    const listing = { public: !!info.public, playing: !!info.playing, planets: info.planets | 0, rounds: info.rounds | 0,
+                      sandbox: !!info.sandbox, sharedDeck: !!info.sharedDeck, emoji: clean(info.emoji).replace(/[A-Za-z0-9<>]/g, '').slice(0, 16) };
+    await this.ctx.storage.put('listing', listing);
+    await this.pushListing();
+    return { ok: true };
+  }
+  async pushListing(gone, except){
+    const room = await this.ctx.storage.get('room');
+    if(!room) return;
+    const reg = this.env.ACCOUNTS.get(this.env.ACCOUNTS.idFromName('~lobbies'));
+    const listing = await this.ctx.storage.get('listing');
+    const holders = (await this.ctx.storage.get('holders')) || [];
+    const hostHere = this.ctx.getWebSockets('seat:0').filter(w => w !== except).length > 0 && !gone;
+    if(gone || !listing || !listing.public){ await reg.lobbyPut(room.code, null); return; }
+    const host = holders.find(h => h.seat === 0) || {};
+    await reg.lobbyPut(room.code, Object.assign({}, listing, { code: room.code, seats: room.seats, taken: holders.length,
+      host: host.name || 'Host', hostHere, updated: Date.now() }));
+  }
+
   async info(){
     const room = await this.ctx.storage.get('room');
     if(!room) return null;
@@ -126,7 +166,7 @@ export class Room extends DurableObject {
   async seatList(except){
     const holders = (await this.ctx.storage.get('holders')) || [];
     const online = new Set(this.ctx.getWebSockets().filter(ws => ws !== except).map(ws => (ws.deserializeAttachment() || {}).seat));
-    return holders.map(h => ({ seat: h.seat, name: h.name, online: online.has(h.seat) }));
+    return holders.map(h => ({ seat: h.seat, name: h.name, emoji: h.emoji || '', online: online.has(h.seat) }));
   }
 
   async fetch(request){
@@ -135,6 +175,8 @@ export class Room extends DurableObject {
     const url = new URL(request.url);
     const token = (url.searchParams.get('token') || '').slice(0, 64);
     const name = (url.searchParams.get('name') || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, NAME_MAX);
+    const rawEmoji = (url.searchParams.get('emoji') || '').replace(/[\u0000-\u001f\s]/g, '').slice(0, 16);
+    const emoji = /[A-Za-z0-9<>]/.test(rawEmoji) ? '' : rawEmoji;
 
     const holders = (await this.ctx.storage.get('holders')) || [];
     let me = token && holders.find(h => h.token === token);
@@ -146,6 +188,7 @@ export class Room extends DurableObject {
       me = { seat, token: crypto.randomUUID(), name: name || (seat === 0 ? 'Host' : 'Player ' + (seat + 1)) };
       holders.push(me);
     }else if(name) me.name = name;
+    if(url.searchParams.has('emoji')) me.emoji = emoji;
     await this.ctx.storage.put('holders', holders);
 
     /* the same seat connecting again replaces its older socket */
@@ -159,6 +202,7 @@ export class Room extends DurableObject {
     const seats = await this.seatList();
     server.send(JSON.stringify({ sys: 'welcome', seat: me.seat, token: me.token, host: 0, code: room.code, size: room.seats, seats }));
     this.broadcast({ sys: 'seats', seats, joined: me.seat }, server);
+    this.ctx.waitUntil(this.pushListing().catch(() => {}));
     await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -185,12 +229,14 @@ export class Room extends DurableObject {
     const seat = (ws.deserializeAttachment() || {}).seat;
     try{ ws.close(code, reason); }catch(e){}
     this.broadcast({ sys: 'seats', seats: await this.seatList(ws), left: seat }, ws);
+    if(seat === 0){ try{ await this.pushListing(false, ws); }catch(e){} }
   }
   async webSocketError(ws){ return this.webSocketClose(ws, 1011, 'error'); }
 
   /** A day with nobody connected: the room forgets itself. */
   async alarm(){
     if(this.ctx.getWebSockets().length){ await this.ctx.storage.setAlarm(Date.now() + IDLE_MS); return; }
+    try{ await this.pushListing(true); }catch(e){}
     await this.ctx.storage.deleteAll();
   }
 
