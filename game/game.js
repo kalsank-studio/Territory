@@ -2844,6 +2844,7 @@ function finishGame(){
   G.result = { rows, won, winner: cands.length===1 ? cands[0] : null, reason };
   say(cands.length===1 ? `${G.players[cands[0]].name} wins the game.` : 'The game ends in a draw.');
   recordGame();
+  submitMatch();
   UI.gate = false; UI.autoflip = false; UI.review = false;
   UI.reviewSeat = Math.max(0, G.players.findIndex(p=>p.kind==='human'));
   render();
@@ -6232,6 +6233,149 @@ async function auGame(user, id){
   render();
 }
 const auWhen = t => t ? whenText2(t) : '\u2014';
+
+/* --- Matches (admin only): every finished game on the site ---------------
+   The server keeps the newest 2,000 (server/accounts.js, "~matches"). The list
+   is 40 at a time, newest first, filtered and searched on the server; a match
+   opens with its players (and the accounts that played them), planets, the
+   whole game log and its replay. */
+const AM = { list:null, next:null, total:0, loading:false, err:'', f:'all', q:'', qT:null, open:null, m:null, mErr:'', del:false, rb:null };
+const AM_FILTERS = [['all','All'],['people','People only'],['bots','With bots'],['online','Online'],['local','On one device'],['accounts','With accounts'],['guests','No accounts'],['sandbox','Sandbox']];
+async function amLoad(more){
+  if(AM.loading) return;
+  AM.loading = true; AM.err = ''; render();
+  const qs = new URLSearchParams({f:AM.f});
+  if(AM.q.trim()) qs.set('q', AM.q.trim());
+  if(more && AM.next) qs.set('after', AM.next);
+  try{
+    const r = await adminCall('GET', '/api/admin/matches?' + qs.toString());
+    AM.list = more ? (AM.list||[]).concat(r.matches) : r.matches; AM.next = r.next; AM.total = r.total;
+  }catch(e){
+    AM.err = e.status===401 ? 'Your admin session has ended \u2014 unlock the Studio again.'
+      : e.status===404 ? 'The match log isn\u2019t on the server yet \u2014 upload the new server/accounts.js.' : (e.message || 'Could not load the matches.');
+    if(e.status===401) adminLock();
+  }
+  AM.loading = false; render();
+}
+async function amOpen(id){
+  AM.open = id; AM.m = null; AM.mErr = ''; AM.del = false; render();
+  try{ AM.m = (await adminCall('GET', '/api/admin/matches/' + encodeURIComponent(id))).match; }
+  catch(e){ AM.mErr = e.message || 'Could not load that match.'; }
+  render();
+}
+async function amDelete(){
+  if(!AM.m) return;
+  if(!AM.del){ AM.del = true; render(); return; }
+  const id = AM.m.id;
+  try{ await adminCall('DELETE', '/api/admin/matches/' + encodeURIComponent(id)); toast('Match deleted.'); }
+  catch(e){ toast(e.message || 'Could not delete it.'); return; }
+  AM.open = null; AM.m = null; AM.del = false;
+  if(AM.list){ AM.list = AM.list.filter(m=>m.id!==id); AM.total = Math.max(0, AM.total - 1); }
+  render();
+}
+/** Add everyone's stats up again from every account (bot games left out), 25 accounts a call. */
+async function amRebuildStats(){
+  if(AM.rb && AM.rb.busy) return;
+  AM.rb = {busy:true, accounts:0, games:0};
+  render();
+  try{
+    let after = '';
+    for(let i = 0; i < 400; i++){
+      const r = await adminCall('POST', '/api/admin/stats/rebuild', {after});
+      AM.rb.accounts += r.accounts; AM.rb.games = r.games; render();
+      if(!r.next) break;
+      after = r.next;
+    }
+    AM.rb.busy = false; AM.rb.done = true; GS.at = 0;
+    toast('Everyone\u2019s stats recounted.');
+  }catch(e){ AM.rb = {err: e.message || 'That didn\u2019t work.'}; }
+  render();
+}
+/** A logged match as the history's game entry, so the replay player and Export take it as they are. */
+const amEntry = m => Object.assign({}, m, {seat: null, result: null});
+const amDur = m => m.started && m.at > m.started ? Math.max(1, Math.round((m.at - m.started)/60000)) + ' min' : '';
+const amWho = (m, i) => { const u = (m.accounts||{})[i]; const p = m.players[i];
+  return p.bot ? 'bot' : u ? '@'+u : 'no account'; };
+function amScore(m){
+  const w = m.won || [];
+  if(m.winner==null) return {txt: w.join('\u2013'), who:'Draw'};
+  const best = w[m.winner], rest = Math.max(0, ...w.filter((_,i)=>i!==m.winner));
+  return {txt: best+'\u2013'+rest, who: m.players[m.winner] ? m.players[m.winner].name : ''};
+}
+function matchesBody(){
+  if(AM.open) return matchDetailHTML();
+  if(!AM.list && !AM.loading && !AM.err) amLoad();
+  const chip = ([k,l]) => `<button class="chip ${AM.f===k?'on':''}" data-act="amfilter" data-v="${k}">${l}</button>`;
+  const rows = (AM.list||[]).map(m=>{
+    const sc = amScore(m);
+    const names = m.players.map((p,i)=>`<span class="am-p${m.winner===i?' won':''}" style="--pc:${PCOLORS[i]}">${p.emoji?esc(p.emoji)+' ':''}${esc(p.name)}${p.bot && p.emoji!=='\u{1F916}'?' \u{1F916}':''}</span>`).join('<i> vs </i>');
+    const accts = m.players.map((p,i)=>(m.accounts||{})[i] ? '@'+esc(m.accounts[i]) : '').filter(Boolean);
+    const tags = [m.mode==='online'?'Online':'One device', whenText2(m.at), amDur(m), m.rounds+' rounds',
+      m.sandbox?'sandbox':'', accts.length ? accts.join(', ') : (m.players.some(p=>!p.bot) ? 'no accounts' : '')].filter(Boolean).join(' \u00B7 ');
+    return `<button class="pf-game am-row" data-act="amopen" data-id="${esc(m.id)}">
+      <span class="pf-res ${m.winner==null?'draw':''}" style="${m.winner!=null?`background:${PCOLORS[m.winner]};border-color:transparent;color:#04211b`:''}">${m.winner==null?'D':esc(avatarText(m.players[m.winner].emoji, m.players[m.winner].name))}</span>
+      <span class="pf-main"><b class="am-names">${names}</b><span>${tags}</span></span>
+      <span class="pf-score">${sc.txt}<small>${m.winner==null?'draw':'planets'}</small></span></button>`;
+  }).join('');
+  return `<div class="stack am">
+    <p class="tiny muted" style="margin:0">Every game finished on this site \u2014 online or on one device, signed in or not, bots included \u2014 with its full game log and replay. The newest 2,000 are kept.${AM.list ? ` <b>${AM.total}</b> stored.` : ''}</p>
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <input type="search" data-am="q" placeholder="Player name, @username or match id" value="${esc(AM.q)}" style="flex:1;min-width:180px" aria-label="Search matches">
+      <button class="btn sm ghost" data-act="amreload" aria-label="Refresh">\u21BB</button>
+    </div>
+    <div class="row am-filters" style="gap:6px;flex-wrap:wrap" role="group" aria-label="Show">${AM_FILTERS.map(chip).join('')}</div>
+    ${AM.err ? `<div class="acct-err">${esc(AM.err)}</div>` : ''}
+    ${!AM.list && AM.loading ? '<div class="net-wait"><span class="spinner"></span>Loading matches\u2026</div>' : ''}
+    ${AM.list ? (rows ? `<div class="pf-list">${rows}</div>` : `<div class="empty-note">${AM.f==='all' && !AM.q ? 'No matches yet. Every game finished on the site from now on shows up here.' : 'No matches like that.'}</div>`) : ''}
+    ${AM.next ? `<button class="btn sm" data-act="ammore" ${AM.loading?'disabled':''}>${AM.loading?'Loading\u2026':'Load more'}</button>` : ''}
+    <div class="card-panel stack am-maint" style="gap:8px;margin-top:6px">
+      <div><b>Everyone\u2019s stats</b><div class="tiny muted">Records and stats count games against people only. Games recorded before that rule kept their bot games in everyone\u2019s stats \u2014 recount once to take them out.</div></div>
+      ${AM.rb && AM.rb.err ? `<div class="acct-err">${esc(AM.rb.err)}</div>` : ''}
+      <button class="btn sm" data-act="amrebuild" style="align-self:flex-start" ${AM.rb && AM.rb.busy ? 'disabled' : ''}>${AM.rb && AM.rb.busy ? `Recounting\u2026 ${AM.rb.accounts} accounts` : AM.rb && AM.rb.done ? `Recounted: ${AM.rb.games} games from ${AM.rb.accounts} accounts` : 'Recount everyone\u2019s stats'}</button>
+    </div>
+  </div>`;
+}
+function matchDetailHTML(){
+  const back = `<button class="btn sm ghost" data-act="amback" style="align-self:flex-start">\u2190 All matches</button>`;
+  if(AM.mErr) return `<div class="stack">${back}<div class="acct-err">${esc(AM.mErr)}</div></div>`;
+  const m = AM.m;
+  if(!m) return `<div class="stack">${back}<div class="net-wait"><span class="spinner"></span>Loading the match\u2026</div></div>`;
+  const pc = i => PCOLORS[i] || 'var(--ui-text)';
+  const sc = amScore(m);
+  const seats = m.players.map((p,i)=>`<div class="am-seat" style="--pc:${pc(i)}">
+      ${avatarHTML(p.bot ? '\u{1F916}' : p.emoji, p.name, 'sm')}
+      <span class="am-seat-nm"><b>${esc(p.name)}</b><small>${amWho(m, i)}${p.standIn?' \u00B7 a bot finished for them':''}</small></span>
+      <span class="am-seat-won"><b>${(m.won||[])[i]||0}</b><small>planets</small></span>
+      ${m.winner===i ? '<span class="am-crown">Winner</span>' : ''}</div>`).join('');
+  const rows = (m.rows||[]).map(r=>`<div class="score-line"><span class="pl">${esc(r.name)}</span>
+      <span class="pf-sc">${r.scores.map((v,i)=>`<b class="${r.winner===i?'top':''}"><span class="dot" style="--pc:${pc(i)}"></span>${v}</b>`).join('<i>\u2013</i>')}</span>
+      <span class="pf-win">${r.winner==null ? 'contested' : esc(m.players[r.winner].name)}</span></div>`).join('');
+  const seen = l => Array.isArray(l.p) ? l.p.map(i=>m.players[i] ? m.players[i].name : '').filter(Boolean).join(', ') : '';
+  const log = (m.log||[]).map(l=>l.rd ? `<div class="rd">${esc(l.t)}</div>`
+    : `<div${l.p?' class="am-private"':''}>${l.w!=null?`<b style="color:${pc(l.w)}">\u25CF</b> `:''}${esc(l.t)}${l.p?` <span class="am-only" title="Only ${esc(seen(l)||'that player')} saw this">\u{1F512} ${esc(seen(l)||'private')}</span>`:''}</div>`).join('');
+  const facts = [m.mode==='online'?'Online':'On one device', whenText2(m.at), amDur(m) ? 'took '+amDur(m) : '', m.rounds+' rounds', (m.planets||m.rows.length)+' planets',
+    m.sharedDeck?'one shared deck':'', m.sandbox?'sandbox':'', m.cmds ? m.cmds+' moves' : '', m.v ? 'v'+m.v : ''].filter(Boolean).join(' \u00B7 ');
+  return `<div class="stack am-detail">
+    ${back}
+    <div class="card-panel stack" style="gap:10px">
+      <div class="row" style="gap:10px;align-items:baseline;flex-wrap:wrap">
+        <h3 style="margin:0;flex:1">${m.winner==null ? 'Draw' : esc(sc.who)+' wins'} <span class="muted" style="font-weight:600">${sc.txt}</span></h3>
+        <span class="tiny muted">${esc(m.reason||'')}</span></div>
+      <p class="tiny muted" style="margin:-4px 0 0">${facts}</p>
+      <div class="am-seats">${seats}</div>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      ${m.replay ? `<button class="btn primary" data-act="amwatch">\u25B6 Watch replay</button>` : '<span class="tiny muted">No replay was kept for this match.</span>'}
+      <button class="btn" data-act="amexport">Export game</button>
+      <button class="btn ${AM.del?'danger':'ghost'}" data-act="amdelete">${AM.del?'Tap again to delete it':'Delete'}</button>
+    </div>
+    <div class="section-head" style="margin:4px 0 0"><h3>Planets</h3></div>
+    <div>${rows || '<div class="empty-note">No planets recorded.</div>'}</div>
+    <div class="section-head" style="margin:8px 0 0"><h3>Game log</h3><p>everything, including what only one player saw (\u{1F512})</p></div>
+    ${log ? `<div class="log am-log">${log}</div>` : '<div class="empty-note">No log was kept for this match.</div>'}
+    <p class="tiny muted mono" style="margin:0">id ${esc(m.id)}</p>
+  </div>`;
+}
 function usersBody(){
   if(!AU.list && !AU.loading && !AU.err) auLoad();
   if(AU.open) return userDetailHTML();
@@ -6279,6 +6423,7 @@ function userDetailHTML(){
       ${avatarHTML(d.emoji, d.name)}
       <div class="acct-who" style="flex:1"><b>${esc(d.name)}</b><span>@${esc(d.user)} \u00B7 joined ${auWhen(d.created)} \u00B7 last seen ${auWhen(d.seen)}</span></div></div></div>
     <div class="pf-tiles">${tile(r.played,'played')}${tile(r.wins,'wins','win')}${tile(r.losses,'losses','loss')}${tile(r.draws,'draws')}${tile(r.played?Math.round(100*r.wins/r.played)+'%':'\u2014','win rate')}</div>
+    ${r.vsBots ? `<p class="tiny muted" style="margin:-6px 0 0">Against people only \u2014 plus ${r.vsBots} game${r.vsBots===1?'':'s'} with bots, not counted.</p>` : ''}
     <div class="au-facts">
       <div><span class="sb-label">Friends (${d.friendList.length})</span><div>${people(d.friendList)}</div></div>
       <div><span class="sb-label">Requests to them</span><div>${people(d.incoming)}</div></div>
@@ -6301,9 +6446,9 @@ function viewStudio(){
   if(!isAdmin() && UI.admGate) return viewAdminGate();
   const ro = !isAdmin();
   if(ro && !RO_TABS.includes(studioTab)) studioTab = 'cards';
-  if(ro && studioTab==='users') studioTab = 'cards';
+  if(ro && (studioTab==='users' || studioTab==='matches')) studioTab = 'cards';
   const tabs = [['cards','Cards'],['tokens','Tokens'],['planets','Planets'],['decks','Decks'],['import','Import & export'],['art','Art & data']].filter(([k])=>!ro || RO_TABS.includes(k))
-    .concat(ro || !accountsAvailable() ? [] : [['users','\u{1F465} Users']]);           // admin only
+    .concat(ro || !accountsAvailable() ? [] : [['users','\u{1F465} Users'], ['matches','\u{1F39E} Matches']]);           // admin only
   const flagged = LIB.cards.filter(c=>c.review).length;
   const bar = `<div class="row" style="gap:6px">${tabs.map(([k,l])=>
     `<button class="chip ${studioTab===k?'on':''}" data-act="tab" data-v="${k}">${l}${k==='cards'&&flagged?` <span class="flagdot">${flagged}</span>`:''}</button>`).join('')}</div>`;
@@ -6312,6 +6457,7 @@ function viewStudio(){
              : studioTab==='art'     ? spritesBody()
              : studioTab==='decks'   ? decksBody()
              : studioTab==='users'   ? usersBody()
+             : studioTab==='matches' ? matchesBody()
              : cardStudio(studioTab==='tokens');
   if(ro) return `${topbar('Studio', `<button class="btn sm" data-act="admopen" title="Unlock editing with the admin password">\u{1F512} Admin</button>`)}<div class="page stack studio-ro">
     <div class="ro-note" role="note">\u{1F441} <b>Read only.</b> Look through every card, planet and deck; only an admin can change them.</div>${bar}${body}</div>`;
@@ -7335,6 +7481,15 @@ document.addEventListener('click', e=>{
     case 'auopen': UI.sheet = null; auOpen(t.dataset.u); window.scrollTo(0,0); break;
     case 'auback': AU.open = null; AU.detail = null; render(); break;
     case 'augame': auGame(t.dataset.u, t.dataset.id); break;
+    case 'amfilter': AM.f = t.dataset.v; AM.list = null; AM.next = null; amLoad(); break;
+    case 'amreload': AM.list = null; AM.next = null; amLoad(); break;
+    case 'ammore': amLoad(true); break;
+    case 'amopen': amOpen(t.dataset.id); window.scrollTo(0,0); break;
+    case 'amback': AM.open = null; AM.m = null; AM.del = false; render(); break;
+    case 'amwatch': if(AM.m && AM.m.replay) startReplay(JSON.parse(gameFile(amEntry(AM.m)))); break;
+    case 'amexport': if(AM.m) exportGame(amEntry(AM.m)); break;
+    case 'amdelete': amDelete(); break;
+    case 'amrebuild': amRebuildStats(); break;
     case 'admclose': UI.admGate = false; render(); break;
     case 'pfemoji': setProfileEmoji(t.dataset.v); render(); break;
     case 'soreload': SO.data = null; soLoad(); render(); break;
@@ -8719,6 +8874,67 @@ function recordGame(){
   saveProfile();
   if(ACCT) flushPending();
 }
+/* --- the match log (Studio → Matches, admin only) --------------------------
+   Every game finished on this site goes to the server's match log with its
+   full game log and replay: local or online, signed in or not, bots or not,
+   sandbox included (only the tutorial and replays stay out). Online, the host
+   sends it — it holds the whole game; a guest never does. A match that can't
+   go straight away (offline, or a server without the log yet) waits in this
+   browser (MATCHQ_KEY) and goes the next time the page is open and online. */
+const MATCHQ_KEY = KEY + '.matchq', MATCHQ_MAX = 12;
+const GAME_VERSION = '0.9.5';
+/** A game with a bot in a seat. Those stay in the history but not in the record or the stats. */
+function isVsBots(g){ return !!(g && (g.players||[]).some(p=>p && p.bot)); }
+function matchEntry(){
+  const r = G.result;
+  const t0 = parseInt(String(G.gameId).slice(0, 8), 36);             // the game id starts with when it began
+  return {
+    id: G.gameId, at: Date.now(), started: (t0 > 1.5e12 && t0 <= Date.now()) ? t0 : null,
+    mode: G.online ? 'online' : 'local', sandbox: !!G.sandbox, rounds: G.rounds, planets: G.planets.length, sharedDeck: !!G.sharedDeck,
+    players: G.players.map(p=>({name:p.name, emoji:p.emoji||'', bot: p.kind==='bot' && !p.standIn, standIn: !!p.standIn})),
+    won: r.won.slice(), winner: r.winner, reason: r.reason,
+    rows: r.rows.map(x=>({name:x.name, scores:x.scores.slice(), winner:x.winner})),
+    /* the whole log: lines only some seats saw carry those seats in p */
+    log: G.log.map(l=>l.rd ? {rd:1, t:l.t} : Object.assign({t:l.t, w:l.who}, l.vis ? {p:l.vis.slice()} : {})),
+    replay: G.replay || (G.setup ? replayBundle(G) : null), v: GAME_VERSION
+  };
+}
+function readMatchQ(){ try{ return JSON.parse(localStorage.getItem(MATCHQ_KEY)||'[]') || []; }catch(e){ return []; } }
+function saveMatchQ(q){
+  q = q.slice(-MATCHQ_MAX);
+  for(let i = 0; i < 4; i++){
+    try{ if(q.length) localStorage.setItem(MATCHQ_KEY, JSON.stringify(q)); else localStorage.removeItem(MATCHQ_KEY); return; }
+    catch(e){ q = q.slice(Math.ceil(q.length/2)); }               // storage full: the oldest waiting go first
+  }
+}
+function submitMatch(){
+  if(!G || !G.over || !G.result || G.tutorial || UI.replaying || G.isView) return;
+  if(!/^[A-Za-z0-9]{4,40}$/.test(String(G.gameId||'')) || UI.matchSent===G.gameId) return;
+  if(!accountsAvailable()) return;                 // a copy opened from a file has no server to send to
+  UI.matchSent = G.gameId;
+  const q = readMatchQ();
+  if(!q.some(m=>m.id===G.gameId)) q.push(matchEntry());
+  saveMatchQ(q);
+  flushMatches();
+}
+let MATCHQ_BUSY = false;
+async function flushMatches(){
+  if(MATCHQ_BUSY || !accountsAvailable()) return;
+  const q = readMatchQ();
+  if(!q.length) return;
+  MATCHQ_BUSY = true;
+  const done = new Set();
+  for(const m of q){
+    try{
+      const r = await fetch(location.origin + '/api/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({match:m})});
+      /* kept, or refused for good (malformed, too big): either way it's done. Busy, or a server without the log yet: later. */
+      if(r.ok || r.status===400 || r.status===413) done.add(m.id);
+    }catch(e){ break; }                              // offline: the rest wait too
+  }
+  saveMatchQ(readMatchQ().filter(m=>!done.has(m.id)));   // anything added meanwhile stays
+  MATCHQ_BUSY = false;
+}
+
 /** A finished game as the match history keeps it, seen from `seat`. */
 function gameEntry(seat){
   const r = G.result;
@@ -8856,7 +9072,7 @@ function stopReplay(quiet){
   fxReset();
   G = null; LIB = rp.saved; RP_LIB_SWAPPED = false;
   UI.rp = null; UI.replaying = false; UI.sheet = null; UI.review = false;
-  if(!quiet){ UI.screen = 'replay'; render(); }
+  if(!quiet){ UI.screen = rp.back==='studio' ? 'studio' : 'replay'; render(); }
 }
 const RP_PACE = {place:700, unplace:450, move:650, lock:550, unlock:350, mulligan:800, flip:1150, activate:1050, endReveal:650, choose:1100, sandbox:500};
 function rpSchedule(ms){ clearTimeout(UI.rpT); UI.rpT = setTimeout(rpTick, Math.max(0, ms)); }
@@ -8931,7 +9147,7 @@ function globalStatsBlock(){
   if(!accountsAvailable()) return '';
   if(!GS.loading && Date.now()-GS.at > 60000) loadGlobalStats();
   const open = UI.gsOpen !== false;
-  return `<div class="section-head gs-head"><h3>Everyone\u2019s stats</h3><p><button class="btn sm ghost" data-act="gstoggle">${open?'Hide':'Show'}</button></p></div>
+  return `<div class="section-head gs-head"><h3>Everyone\u2019s stats</h3><p class="tiny muted" style="margin:0">games against people</p><p><button class="btn sm ghost" data-act="gstoggle">${open?'Hide':'Show'}</button></p></div>
     ${!open ? '' : GS.err ? `<div class="acct-err">${esc(GS.err)}</div>` : !GS.data ? '<div class="net-wait"><span class="spinner"></span>Adding everything up\u2026</div>' : `<div class="stack gs-body">${statsHTML(GS.data, {global:true})}</div>`}`;
 }
 function viewReplay(){
@@ -8974,12 +9190,13 @@ async function histReplay(id){
   startReplay(JSON.parse(gameFile(g)));
 }
 
+/** The record: games against people only. Games with a bot stay in the history but don't count. */
 function profileStats(){
-  const g = PROFILE.games;
+  const all = PROFILE.games, g = all.filter(x=>!isVsBots(x));
   const n = k => g.filter(x=>x.result===k).length;
   const wins = n('win'), losses = n('loss'), draws = n('draw');
   return {played:g.length, wins, losses, draws, rate: g.length ? Math.round(100*wins/g.length) : null,
-          online: g.filter(x=>x.mode==='online').length};
+          online: g.filter(x=>x.mode==='online').length, vsBots: all.length - g.length};
 }
 const RESULT_WORD = {win:'Win', loss:'Loss', draw:'Draw'};
 /** "3–2": your planets, then the best of everyone else's. */
@@ -9272,6 +9489,7 @@ function playerGameSheetHTML(){
 
 /* --- the Stats page: everything adds up from the match history ---------- */
 function statsFrom(games){
+  games = games.filter(g=>!isVsBots(g));                  // only games against people count
   const withStats = games.filter(g=>g.stats && g.stats.v);
   const cards = {}, planets = {};
   games.forEach(g=>(g.rows||[]).forEach(r=>{ const p = planets[r.name] || (planets[r.name] = {name:r.name, seen:0, won:0, rounds:0, slots:[]}); p.seen++; if(r.winner===g.seat) p.won++; }));
@@ -9324,7 +9542,7 @@ function statsHTML(S, opt){
   opt = opt || {};
   S = S || statsFrom(PROFILE.games);
   const all = !!opt.global;
-  if(!S.total) return `<div class="empty-note">${all ? 'No games have been recorded on the server yet.' : 'Finish a game and your numbers start here.'}</div>`;
+  if(!S.total) return `<div class="empty-note">${all ? 'No games against people have been recorded on the server yet.' : 'Finish a game against another person and your numbers start here \u2014 games with bots aren\u2019t counted.'}</div>`;
   if(!S.n) return `<div class="empty-note">These games were played before stats were kept. Finish a new one and your numbers start here.</div>`;
   const sortBy = (all ? UI.stSortG : UI.stSort) || 'games';
   const keyF = {games:c=>c.games, win:c=>c.games ? c.gameWins/c.games : -1, planet:c=>c.onBoard ? c.planetWins/c.onBoard : -1, name:c=>0}[sortBy];
@@ -9384,7 +9602,7 @@ function viewProfile(){
     return `<button class="pf-game" data-act="histopen" data-id="${esc(g.id)}">
       <span class="pf-res ${g.result}">${RESULT_WORD[g.result].charAt(0)}</span>
       <span class="pf-main"><b>vs ${vs || 'nobody'}</b>
-        <span>${g.mode==='online'?'Online':'This device'} · ${whenText2(g.at)}</span></span>
+        <span>${g.mode==='online'?'Online':'This device'} · ${whenText2(g.at)}${isVsBots(g)?' · not counted':''}</span></span>
       <span class="pf-score" aria-label="Planets: ${scoreLine(g)}">${scoreLine(g)}<small>planets</small></span>
     </button>`;
   }).join('');
@@ -9400,6 +9618,7 @@ function viewProfile(){
       ${tile(st.played, 'played')}${tile(st.wins, 'wins', 'win')}${tile(st.losses, 'losses', 'loss')}${tile(st.draws, 'draws')}
       ${tile(st.rate==null ? '—' : st.rate+'%', 'win rate')}
     </div>
+    <p class="tiny muted pf-botnote" style="margin:-6px 0 0">Your record and stats count games against people only${st.vsBots ? ` \u2014 ${st.vsBots} game${st.vsBots===1?'':'s'} with bots ${st.vsBots===1?'is':'are'} in your history but not counted` : '; games with bots stay in your history but aren\u2019t counted'}.</p>
     <div class="seg pf-tabs" role="tablist">
       <button class="chip ${UI.pfTab!=='stats'?'on':''}" role="tab" aria-selected="${UI.pfTab!=='stats'}" data-act="pftab" data-v="history">Match history</button>
       <button class="chip ${UI.pfTab==='stats'?'on':''}" role="tab" aria-selected="${UI.pfTab==='stats'}" data-act="pftab" data-v="stats">Stats</button>
@@ -9439,6 +9658,8 @@ function historySheetHTML(){
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.pf==='name') setProfileName(e.target.value); });
 document.addEventListener('change', e=>{ if(e.target.dataset && e.target.dataset.pf==='emoji'){ setProfileEmoji(e.target.value); render(); } });
 document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.au==='q'){ AU.q = e.target.value; render(); } });
+/* the match search asks the server, a moment after typing stops */
+document.addEventListener('input', e=>{ if(e.target.dataset && e.target.dataset.am==='q'){ AM.q = e.target.value; clearTimeout(AM.qT); AM.qT = setTimeout(()=>{ AM.list = null; AM.next = null; amLoad(); }, 400); } });
 document.addEventListener('input', e=>{ const k = e.target.dataset && e.target.dataset.so; if(!k) return;
   if(k==='q') soSearch(e.target.value); else if(k==='draft') SO.draft = e.target.value; });
 document.addEventListener('keydown', e=>{ if(e.key==='Enter' && e.target.dataset && e.target.dataset.so==='draft'){ e.preventDefault(); soComment(); } });
@@ -10372,7 +10593,7 @@ document.addEventListener('click', e=>{
   if(t.dataset.act==='acctnew') signIn(UI.pfUser||'', UI.pfPass||'', true);
   if(t.dataset.act==='acctout') signOut();
 });
-window.addEventListener('online', ()=>{ if(ACCT) syncAccount(); });
+window.addEventListener('online', ()=>{ if(ACCT) syncAccount(); flushMatches(); });
 
 /* ------------------------------------------------------------------
    BOOT
@@ -10393,6 +10614,7 @@ downloadsCap();   // ask early, so the first Download doesn't wait on it
 onlineBoot();
 adminCheck();
 if(ACCT && accountsAvailable()) syncAccount();
+if(accountsAvailable()) setTimeout(flushMatches, 2500);
 
 window.addEventListener('pagehide', ()=>{ clearTimeout(saveTimer); save(); });
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden'){ clearTimeout(saveTimer); save(); } });

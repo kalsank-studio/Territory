@@ -1389,3 +1389,25 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .ls-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ls-main small{opacity:.75;font-size:12px}
 .ls-row .btn{flex:none;min-width:64px}
+
+/* --- Studio → Matches (admin, 0.9.5) ------------------------------------
+   One row per match, the same shape as a history row: who won (their colour),
+   who played, when and how, the planets score. A match opens to its seats,
+   planets and the whole log; lines only some players saw carry a 🔒. */
+.am-names{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 4px;white-space:normal}
+.am-names i{font-style:normal;font-weight:500;color:var(--ui-dim);font-size:12px}
+.am-p{font-weight:600}
+.am-p.won{text-decoration:underline;text-decoration-color:var(--pc);text-decoration-thickness:2px;text-underline-offset:3px}
+.am-row .pf-main > span{white-space:normal}
+.am-seats{display:flex;flex-direction:column;gap:6px}
+.am-seat{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-m);background:var(--ui-panel-2);border:1px solid var(--ui-line);border-left:3px solid var(--pc)}
+.am-seat-nm{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.am-seat-nm b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.am-seat-nm small{font-size:12px;color:var(--ui-dim)}
+.am-seat-won{display:flex;flex-direction:column;align-items:flex-end;line-height:1.05}
+.am-seat-won b{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums}
+.am-seat-won small{font-size:10.5px;color:var(--ui-dim)}
+.am-crown{font-size:11px;font-weight:800;letter-spacing:.04em;padding:2px 8px;border-radius:99px;background:var(--pc);color:#04211b}
+.am-log{max-height:60dvh}
+.am-private{opacity:.92}
+.am-only{font-size:11px;color:var(--ui-dim);white-space:nowrap}

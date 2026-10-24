@@ -60,12 +60,14 @@ try{
   r = await call('GET', '/api/social/poll', null, b.t);
   check(!r.body.invites.length, 'dismissing it clears it');
 
-  // a game on Ana's profile, and comments
+  // a game on Ana's profile (against a person — games with bots don't count toward a record), and comments
   const game = { id: 'g' + tag + 'x1', at: Date.now(), mode: 'local', seat: 0, result: 'win', won: [3, 2], rounds: 6,
-    players: [{ name: 'Ana' }, { name: 'Bot', bot: true }], rows: [], log: [{ t: 'x' }], stats: { v: 1 }, replay: { v: 1, setup: {}, cmds: [] } };
-  await call('POST', '/api/account/games', { games: [game] }, a.t);
+    players: [{ name: 'Ana' }, { name: 'Bo' }], rows: [], log: [{ t: 'x' }], stats: { v: 1 }, replay: { v: 1, setup: {}, cmds: [] } };
+  const botGame = Object.assign({}, game, { id: 'g' + tag + 'x0', at: Date.now() - 1000, players: [{ name: 'Ana' }, { name: 'Bot', bot: true }] });
+  await call('POST', '/api/account/games', { games: [game, botGame] }, a.t);
   r = await call('GET', '/api/users/' + a.user, null, b.t);
   check(r.status === 200 && r.body.record.wins === 1 && r.body.games[0].id === game.id && r.body.relation === 'friend' && !r.body.games[0].log && !r.body.games[0].replay, 'Bo views Ana’s profile');
+  check(r.body.record.played === 1 && r.body.record.vsBots === 1 && r.body.games.length === 2, 'her game against a bot is listed but not counted in her record');
   r = await call('GET', '/api/account', null, a.t);
   check(r.body.games[0].hasReplay && !r.body.games[0].replay, 'the history list says there’s a replay without carrying it');
   r = await call('GET', `/api/users/${a.user}/games/${game.id}`, null, b.t);
@@ -97,20 +99,24 @@ try{
   r = await call('GET', '/api/users?q=' + b.user, null, a.t);
   check(r.body.users.some(u => u.user === b.user), 'an exact username is always found');
 
-  // everyone's stats
+  // everyone's stats: games against people only
   r = await call('GET', '/api/stats');
   const before = r.body.n || 0;
-  check(r.status === 200, 'everyone\u2019s stats can be read without signing in');
+  check(r.status === 200, 'everyone’s stats can be read without signing in');
   const sg = { id: 's' + tag + 'x2', at: Date.now(), mode: 'local', seat: 0, result: 'win', won: [3, 1], rounds: 6,
-    players: [{ name: 'Bo' }, { name: 'Bot', bot: true }], rows: [{ name: 'Oasis', scores: [10, 4], winner: 0 }],
+    players: [{ name: 'Bo' }, { name: 'Ana' }], rows: [{ name: 'Oasis', scores: [10, 4], winner: 0 }],
     stats: { v: 1, won: 1, draws: [1, 1, 2, 1, 1, 1], power: [4, 9, 15, 20, 26, 30], cards: [{ n: 'Blade', pw: 1 }],
              slots: [{ p: 'Oasis', s: [{ c: 'x', r: '+1', o: 5, m: 4 }, { c: 'y', r: '+2', o: 0, m: 0 }, { c: 'z', r: '+1', o: 2, m: 1 }] }] } };
   await call('POST', '/api/account/games', { games: [sg] }, b.t);
   await call('POST', '/api/account/games', { games: [sg] }, b.t);   // the same game twice counts once
   r = await call('GET', '/api/stats');
-  check(r.body.n === before + 1, 'a recorded game adds to everyone\u2019s stats, once');
+  check(r.body.n === before + 1, 'a recorded game adds to everyone’s stats, once');
   const oasis = r.body.planets.find(p => p.name === 'Oasis');
   check(oasis && oasis.slots.some(sl => sl.m >= 4 && sl.rounds >= 6), 'slots count rounds paid out of rounds played');
   check(r.body.cards.some(c => c.name === 'Blade'), 'cards are counted');
+  const vsBot = Object.assign({}, sg, { id: 's' + tag + 'x3', players: [{ name: 'Bo' }, { name: 'Bot', bot: true }] });
+  await call('POST', '/api/account/games', { games: [vsBot] }, b.t);
+  r = await call('GET', '/api/stats');
+  check(r.body.n === before + 1, 'a game against a bot adds nothing to everyone’s stats');
 }catch(e){ fails++; console.log('  FAIL', e.message); }
 finally{ if(dev) dev.kill(); console.log(fails ? fails + ' failures' : 'social: all checks passed'); process.exit(fails ? 1 : 0); }

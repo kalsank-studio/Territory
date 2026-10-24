@@ -17,6 +17,15 @@
    A token is "<username>.<random>": the username says which account to
    wake, the random part must be one of that account's open sessions.
 
+   Records and stats count only games played against people: a game with a
+   bot in any seat stays in the match history but adds nothing to wins,
+   losses or the Stats numbers (`counted`).
+
+   Every finished game, from any browser, signed in or not, bots or not, is
+   also sent to the match log the admin reads (POST /api/matches, kept in one
+   more object, "~matches"): who sat where, how it ended, the full game log
+   and the replay. See matchRoute below.
+
    Passwords are stored as PBKDF2-SHA-256 with a random salt — not plain
    text, but kept light (Workers' free plan gives each request 10 ms of
    CPU), and there is no rate limiting or recovery. Good enough for friends;
@@ -40,6 +49,10 @@ const ADMIN_TRIES = 5;                       // wrong admin passwords from one a
 const ADMIN_LOCK_MS = 15 * 60 * 1000;        // …15 minutes, doubling each time it happens again
 const ADMIN_GLOBAL_FAILS = 50;               // wrong passwords from everywhere in an hour before the door shuts for the hour
 const ADMIN_SESSION_MS = 30 * 24 * 3600e3;   // an admin unlock lasts 30 days on that browser
+const MATCHES_MAX = 2000;                    // the match log keeps this many; the oldest go first
+const MATCH_BYTES_MAX = 600000;              // one match, full log and replay included
+const MATCHES_PER_HOUR = 60;                 // from one address — a game takes minutes, so this is generous
+const MATCH_PAGE = 40;
 
 const hex = buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
 const randHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
@@ -60,6 +73,14 @@ function sameText(a, b){
 export const cleanUser = u => String(u || '').trim().toLowerCase();
 /** A profile emoji: a few characters at most, no letters or digits (so it can't be a name in disguise). */
 const cleanEmoji = e => { const v = String(e || '').replace(/[\u0000-\u001f\s]/g, '').slice(0, 16); return /[A-Za-z0-9<>]/.test(v) ? '' : v; };
+/** A game with a bot in any seat (a bot standing in for a dropped player doesn't count as one). */
+export const hasBot = g => !!(g && Array.isArray(g.players) && g.players.some(p => p && p.bot));
+/** Does this game count toward a record and the stats? Only games against people. */
+const counted = g => !hasBot(g);
+const recordOf = games => {
+  const real = games.filter(counted), n = k => real.filter(x => x.result === k).length;
+  return { played: real.length, wins: n('win'), losses: n('loss'), draws: n('draw'), vsBots: games.length - real.length };
+};
 
 /* --- adding games up (the same arithmetic as the game's own Stats page) --- */
 const freshStats = () => ({ v: 1, games: 0, withStats: 0, cards: {}, planets: {},
@@ -103,6 +124,52 @@ function publicStats(S){
 }
 /** What the history list needs: everything but the log. */
 const summary = g => { const { log, replay, ...rest } = g; return Object.assign(rest, { hasLog: !!(log && log.length), hasReplay: !!(replay || rest.hasReplay) }); };
+
+/* --- the match log: what's kept of one match ---------------------------- */
+const clip = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+const MATCH_ID = /^[A-Za-z0-9]{4,40}$/;
+/** Check and tidy a match sent by a game. Returns {match} or {error}. */
+function cleanMatch(m){
+  if(!m || typeof m !== 'object') return { error: 'Send {match:{…}}.' };
+  if(typeof m.id !== 'string' || !MATCH_ID.test(m.id)) return { error: 'A match needs an id.' };
+  if(!Array.isArray(m.players) || m.players.length < 1 || m.players.length > 4) return { error: 'A match has one to four players.' };
+  const n = m.players.length;
+  const nums = (a, len) => Array.isArray(a) ? a.slice(0, len).map(x => (typeof x === 'number' && isFinite(x)) ? x : 0) : [];
+  const now = Date.now();
+  const at = (typeof m.at === 'number' && m.at > 1.5e12 && m.at < now + 864e5) ? m.at : now;
+  const started = (typeof m.started === 'number' && m.started > 1.5e12 && m.started <= at) ? m.started : null;
+  const players = m.players.map(p => ({ name: clip(p && p.name, NAME_MAX) || 'Player', emoji: cleanEmoji(p && p.emoji), bot: !!(p && p.bot),
+    standIn: !!(p && p.standIn) }));
+  const rows = (Array.isArray(m.rows) ? m.rows : []).slice(0, 12).map(r => ({ name: clip(r && r.name, 40), scores: nums(r && r.scores, n),
+    winner: (r && Number.isInteger(r.winner) && r.winner >= 0 && r.winner < n) ? r.winner : null }));
+  const winner = Number.isInteger(m.winner) && m.winner >= 0 && m.winner < n ? m.winner : null;
+  const log = Array.isArray(m.log) ? m.log.slice(0, 5000).map(l => l && l.rd ? { rd: 1, t: clip(l.t, 300) }
+    : { t: clip(l && l.t, 300), w: Number.isInteger(l && l.w) ? l.w : undefined,
+        /* a line only some seats saw: which seats (or just 1, "private") */
+        p: Array.isArray(l && l.p) ? l.p.filter(i => Number.isInteger(i) && i >= 0 && i < n).slice(0, 4) : (l && l.p ? 1 : undefined) }) : [];
+  const replay = (m.replay && typeof m.replay === 'object' && m.replay.setup && Array.isArray(m.replay.cmds)) ? m.replay : null;
+  const match = {
+    id: m.id, at, started, mode: m.mode === 'online' ? 'online' : 'local', sandbox: !!m.sandbox,
+    rounds: Math.max(1, Math.min(12, m.rounds | 0 || 6)), planets: rows.length || (m.planets | 0), sharedDeck: !!m.sharedDeck,
+    players, won: nums(m.won, n), winner, reason: clip(m.reason, 40), rows, cmds: replay ? replay.cmds.length : (m.cmds | 0),
+    bots: players.filter(p => p.bot).length, v: clip(m.v, 16), log, replay, accounts: {}
+  };
+  if(JSON.stringify(match).length > MATCH_BYTES_MAX) return { error: 'That match is too big to keep.', status: 413 };
+  return { match };
+}
+/** Newest first: the index key counts down from the far future. */
+const matchKey = (at, id) => 'i:' + String(9999999999999 - Math.floor(at)).padStart(13, '0') + ':' + id;
+const matchSummary = m => { const { log, replay, ...rest } = m; return Object.assign(rest, { hasLog: !!(log && log.length), hasReplay: !!replay }); };
+const MATCH_FILTERS = {
+  all: () => true,
+  people: m => !m.bots && !m.sandbox,
+  bots: m => m.bots > 0 && !m.sandbox,
+  online: m => m.mode === 'online',
+  local: m => m.mode !== 'online',
+  accounts: m => Object.keys(m.accounts || {}).length > 0,
+  guests: m => !Object.keys(m.accounts || {}).length,
+  sandbox: m => !!m.sandbox
+};
 
 export class Account extends DurableObject {
   async register(username, password){
@@ -167,10 +234,11 @@ export class Account extends DurableObject {
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     if(!Array.isArray(list)) return { error: 'Send {games:[…]}.', status: 400 };
     let added = 0;
-    const fresh = [];
+    const fresh = [], seats = [];
     for(const g of list.slice(0, 250)){
       if(!g || typeof g.id !== 'string' || !/^[a-z0-9]{4,40}$/i.test(g.id)) continue;
       if(JSON.stringify(g).length > GAME_BYTES_MAX) continue;
+      if(Number.isInteger(g.seat)) seats.push({ id: g.id, seat: g.seat });     // which seat this account had, for the match log
       const key = 'g:' + g.id;
       if(await this.ctx.storage.get(key)) continue;
       /* a replay is kept under its own key, so the history list never reads it */
@@ -178,7 +246,7 @@ export class Account extends DurableObject {
       if(replay){ rest.hasReplay = true; await this.ctx.storage.put('r:' + g.id, replay); }
       await this.ctx.storage.put(key, rest);
       added++;
-      if(rest.stats && rest.stats.v && rest.mode !== 'sandbox') fresh.push(rest);
+      if(rest.stats && rest.stats.v && rest.mode !== 'sandbox' && counted(rest)) fresh.push(rest);
     }
     const all = await this.games();
     if(all.length > GAMES_MAX){
@@ -186,7 +254,7 @@ export class Account extends DurableObject {
       await this.ctx.storage.delete(old.map(g => 'g:' + g.id));
       await this.ctx.storage.delete(old.map(g => 'r:' + g.id));
     }
-    return { added, total: Math.min(all.length, GAMES_MAX), fresh };
+    return { added, total: Math.min(all.length, GAMES_MAX), fresh, seats };
   }
   async game(secret, id){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
@@ -262,11 +330,7 @@ export class Account extends DurableObject {
     await this.putRel(r);
     return { ok: true };
   }
-  async record(){
-    const g = await this.games();
-    const n = k => g.filter(x => x.result === k).length;
-    return { played: g.length, wins: n('win'), losses: n('loss'), draws: n('draw') };
-  }
+  async record(){ return recordOf(await this.games()); }
   /** What anyone signed in may see: the name, the record and recent games, with comment counts. */
   async publicProfile(){
     const username = await this.exists();
@@ -276,9 +340,7 @@ export class Account extends DurableObject {
     const keys = recent.map(g => 'c:' + g.id);
     const cm = keys.length ? await this.ctx.storage.get(keys) : new Map();
     recent.forEach(g => { const c = cm.get('c:' + g.id); g.comments = c ? c.length : 0; });
-    const n = k => all.filter(x => x.result === k).length;
-    return { username, name: await this.displayName(), emoji: await this.displayEmoji(),
-             record: { played: all.length, wins: n('win'), losses: n('loss'), draws: n('draw') }, games: recent };
+    return { username, name: await this.displayName(), emoji: await this.displayEmoji(), record: recordOf(all), games: recent };
   }
   async publicGame(id){
     const g = await this.ctx.storage.get('g:' + id);
@@ -315,12 +377,26 @@ export class Account extends DurableObject {
     return [...out.entries()].map(([k, v]) => ({ user: k.slice(2), name: v.name, emoji: v.emoji || '' }));
   }
   /* --- everyone's stats: one more object ("~stats") adds up every game any
-     account records, the same way each player's own Stats page does. */
+     account records against people, the same way each player's own Stats page does. */
   async statsMerge(games, user){
     const S = (await this.ctx.storage.get('stats')) || freshStats();
     games.forEach(g => mergeGame(S, g, user));
     await this.ctx.storage.put('stats', S);
     return { ok: true };
+  }
+  /** Adding everything up again from every account (the admin's rebuild): a
+      scratch copy fills a page of accounts at a time, then replaces the live one. */
+  async statsRebuildStep(reset, pages, done){
+    const S = reset ? freshStats() : ((await this.ctx.storage.get('statsNext')) || freshStats());
+    pages.forEach(({ user, games }) => games.forEach(g => mergeGame(S, g, user)));
+    if(done){ await this.ctx.storage.put('stats', S); await this.ctx.storage.delete('statsNext'); }
+    else await this.ctx.storage.put('statsNext', S);
+    return { games: S.games };
+  }
+  /** This account's games that the stats add up: against people, not sandbox, with numbers. */
+  async statsGames(){
+    return (await this.games()).filter(g => g.stats && g.stats.v && g.mode !== 'sandbox' && counted(g))
+      .map(g => ({ stats: g.stats, rows: g.rows, seat: g.seat, rounds: g.rounds, at: g.at }));       // just the numbers, not the logs
   }
   /* --- the admin lock: one more object ("~admin") keeps admin sessions and
      counts failed password attempts per address. The password itself is a
@@ -371,13 +447,11 @@ export class Account extends DurableObject {
     if(!u) return null;
     const prof = (await this.ctx.storage.get('profile')) || {};
     const games = await this.games();
-    const n = k => games.filter(x => x.result === k).length;
     const rel = await this.rel();
     const sessions = (await this.ctx.storage.get('sessions')) || [];
     return { user: u.username, name: prof.name || u.username, emoji: prof.emoji || '', created: u.created || null,
              seen: (await this.ctx.storage.get('seen')) || (sessions.length ? Math.max(...sessions.map(x => x.at || 0)) : null),
-             record: { played: games.length, wins: n('win'), losses: n('loss'), draws: n('draw') },
-             lastGame: games.length ? games[0].at : null, friends: rel.friends.length, sessions: sessions.length };
+             record: recordOf(games), lastGame: games.length ? games[0].at : null, friends: rel.friends.length, sessions: sessions.length };
   }
   async adminDetail(){
     const base = await this.adminSummary();
@@ -413,6 +487,96 @@ export class Account extends DurableObject {
   }
   async statsGet(){ return publicStats((await this.ctx.storage.get('stats')) || freshStats()); }
 
+  /* --- the match log (the "~matches" object) ------------------------------
+       i:<countdown>:<id>  the summary, newest first in key order
+       x:<id>              -> its i: key (so a match is only kept once)
+       l:<id>, r:<id>      its full log and its replay, read only when it's opened
+       p:<id>              accounts that said they played it before it arrived
+       rl:<address>        how many matches that address sent this hour
+       n                   how many are kept */
+  async matchAdd(m, ip){
+    const now = Date.now();
+    const rl = (await this.ctx.storage.get('rl:' + ip)) || { n: 0, since: now };
+    if(now - rl.since > 3600e3){ rl.n = 0; rl.since = now; }
+    if(rl.n >= MATCHES_PER_HOUR) return { error: 'Too many matches from here this hour.', status: 429 };
+    if(await this.ctx.storage.get('x:' + m.id)) return { ok: true, added: false };
+    rl.n++; await this.ctx.storage.put('rl:' + ip, rl);
+    const { log, replay, ...rest } = m;
+    const early = await this.ctx.storage.get('p:' + m.id);
+    if(early){ Object.assign(rest.accounts, early.accounts); await this.ctx.storage.delete('p:' + m.id); }
+    rest.hasLog = !!(log && log.length); rest.hasReplay = !!replay;
+    const key = matchKey(rest.at, m.id);
+    await this.ctx.storage.put({ [key]: rest, ['x:' + m.id]: key, ['l:' + m.id]: log || [] });
+    if(replay) await this.ctx.storage.put('r:' + m.id, replay);
+    const n = ((await this.ctx.storage.get('n')) || 0) + 1;
+    await this.ctx.storage.put('n', n);
+    if(n > MATCHES_MAX) await this.matchTrim(n - MATCHES_MAX);
+    return { ok: true, added: true };
+  }
+  async matchTrim(k){
+    const old = await this.ctx.storage.list({ prefix: 'i:', reverse: true, limit: Math.min(k, 100) });
+    const keys = [];
+    for(const [key, v] of old) keys.push(key, 'x:' + v.id, 'l:' + v.id, 'r:' + v.id);
+    for(let i = 0; i < keys.length; i += 128) await this.ctx.storage.delete(keys.slice(i, i + 128));
+    await this.ctx.storage.put('n', Math.max(0, ((await this.ctx.storage.get('n')) || 0) - old.size));
+  }
+  /** Signed-in players say which seat they had (their game reached their account). */
+  async matchLink(user, list){
+    for(const { id, seat } of list.slice(0, 50)){
+      if(!MATCH_ID.test(String(id)) || !Number.isInteger(seat) || seat < 0 || seat > 3) continue;
+      const key = await this.ctx.storage.get('x:' + id);
+      if(key){
+        const m = await this.ctx.storage.get(key);
+        if(m && seat < m.players.length && m.accounts[seat] !== user){ m.accounts[seat] = user; await this.ctx.storage.put(key, m); }
+      }else{
+        const p = (await this.ctx.storage.get('p:' + id)) || { at: Date.now(), accounts: {} };
+        p.accounts[seat] = user;
+        await this.ctx.storage.put('p:' + id, p);
+      }
+    }
+    /* a link whose match never arrived (an offline copy, a sandbox it didn't send) is let go after a week */
+    const stale = await this.ctx.storage.list({ prefix: 'p:', limit: 50 });
+    const gone = [...stale].filter(([, v]) => Date.now() - (v.at || 0) > 7 * 864e5).map(([k]) => k);
+    if(gone.length) await this.ctx.storage.delete(gone);
+    return { ok: true };
+  }
+  /** A page of the log, newest first, through one filter. Scans at most 1000 matches per call. */
+  async matchList(after, filter, q){
+    const keep = MATCH_FILTERS[filter] || MATCH_FILTERS.all;
+    const needle = String(q || '').trim().toLowerCase();
+    const hit = m => !needle || m.players.some(p => p.name.toLowerCase().includes(needle))
+      || Object.values(m.accounts || {}).some(u => u.includes(needle)) || m.id.toLowerCase() === needle;
+    const out = [];
+    let cursor = after || null, scanned = 0, more = true;
+    while(out.length < MATCH_PAGE && scanned < 1000 && more){
+      const opts = { prefix: 'i:', limit: 100 };
+      if(cursor) opts.startAfter = cursor;
+      const page = await this.ctx.storage.list(opts);
+      if(page.size < 100) more = false;
+      for(const [k, m] of page){
+        cursor = k; scanned++;
+        if(keep(m) && hit(m)) out.push(m);
+        if(out.length >= MATCH_PAGE){ more = true; break; }
+      }
+      if(!page.size) more = false;
+    }
+    return { matches: out, next: more ? cursor : null, total: (await this.ctx.storage.get('n')) || 0 };
+  }
+  async matchGet(id){
+    const key = await this.ctx.storage.get('x:' + id);
+    const m = key && await this.ctx.storage.get(key);
+    if(!m) return { error: 'No such match.', status: 404 };
+    const got = await this.ctx.storage.get(['l:' + id, 'r:' + id]);
+    return { match: Object.assign({}, m, { log: got.get('l:' + id) || [], replay: got.get('r:' + id) || null }) };
+  }
+  async matchDelete(id){
+    const key = await this.ctx.storage.get('x:' + id);
+    if(!key) return { error: 'No such match.', status: 404 };
+    await this.ctx.storage.delete([key, 'x:' + id, 'l:' + id, 'r:' + id]);
+    await this.ctx.storage.put('n', Math.max(0, ((await this.ctx.storage.get('n')) || 1) - 1));
+    return { ok: true };
+  }
+
   async clearGames(secret){
     if(!await this.signedIn(secret)) return { error: 'Signed out.', status: 401 };
     const all = await this.ctx.storage.list({ prefix: 'g:' });
@@ -425,7 +589,7 @@ export class Account extends DurableObject {
 
 /** The /api/account routes. Returns a Response, or null if the path isn't one of them. */
 export async function accountRoute(request, env, url, json){
-  if(!/^\/api\/(account|social|users|stats|admin)(\/|$)/.test(url.pathname)) return null;
+  if(!/^\/api\/(account|social|users|stats|admin|matches)(\/|$)/.test(url.pathname)) return null;
   const stubFor = u => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(u));
   const reply = r => r.error ? json({ error: r.error }, r.status || 400) : json(r, r.token && url.pathname.endsWith('/register') ? 201 : 200);
   const body = async () => { try{ return await request.json(); }catch(e){ return {}; } };
@@ -442,6 +606,14 @@ export async function accountRoute(request, env, url, json){
   }
 
   if(p === '/api/stats' && request.method === 'GET') return json(await stubFor(STATS).statsGet());
+  /* the match log: any game page may add the match it just finished, signed in or not */
+  if(p === '/api/matches' && request.method === 'POST'){
+    const len = +(request.headers.get('Content-Length') || 0);
+    if(len > MATCH_BYTES_MAX * 1.5) return json({ error: 'That match is too big to keep.' }, 413);
+    const c = cleanMatch((await body()).match);
+    if(c.error) return json({ error: c.error }, c.status || 400);
+    return reply(await stubFor(MATCHES).matchAdd(c.match, request.headers.get('CF-Connecting-IP') || 'local'));
+  }
   if(p.startsWith('/api/admin')) return adminRoute(request, env, p, stubFor, json, body);
 
   /* everything else needs a session */
@@ -466,7 +638,9 @@ export async function accountRoute(request, env, url, json){
   if(p === '/api/account/games' && request.method === 'POST'){
     const r = await stub.addGames(secret, (await body()).games);
     if(r.fresh && r.fresh.length){ try{ await stubFor(STATS).statsMerge(r.fresh, u); }catch(e){} }
-    delete r.fresh;
+    /* this account played these: the match log shows the username on that seat */
+    if(r.seats && r.seats.length){ try{ await stubFor(MATCHES).matchLink(u, r.seats); }catch(e){} }
+    delete r.fresh; delete r.seats;
     return reply(r);
   }
   if(p === '/api/account/games' && request.method === 'DELETE') return reply(await stub.clearGames(secret));
@@ -476,12 +650,17 @@ export async function accountRoute(request, env, url, json){
   return json({ error: 'Not found.' }, 404);
 }
 
-const DIRECTORY = '~directory', STATS = '~stats', ADMIN = '~admin';
+const DIRECTORY = '~directory', STATS = '~stats', ADMIN = '~admin', MATCHES = '~matches';
 const sha256 = async t => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)));
 /** The admin lock on the Studio.
      POST /api/admin/login  {password} -> {token}    (the password is the ADMIN_PASSWORD secret)
      GET  /api/admin                   -> {admin:true}   with Authorization: Bearer <token>
      POST /api/admin/logout
+     GET  /api/admin/users[?after=]  ·  /users/<u>  ·  /users/<u>/games/<id>
+     GET  /api/admin/matches[?after=&f=&q=]   every match, newest first, 40 a page
+     GET  /api/admin/matches/<id>             one match with its full log and replay
+     DELETE /api/admin/matches/<id>
+     POST /api/admin/stats/rebuild {after?}   add everyone's stats up again, 25 accounts a call
    Changing the secret signs every admin browser out. */
 async function adminRoute(request, env, p, stubFor, json, body){
   const secretPw = env.ADMIN_PASSWORD;
@@ -495,20 +674,22 @@ async function adminRoute(request, env, p, stubFor, json, body){
     if(g.wait) return json({ error: `Too many wrong passwords. Try again in ${Math.ceil(g.wait / 60)} minute${g.wait > 60 ? 's' : ''}.`, wait: g.wait }, 429);
     const b = await body();
     const ok = typeof b.password === 'string' && sameText(await sha256(b.password), await sha256(secretPw));
-    if(!ok){ await gate.adminFail(ip); return json({ error: 'That isn\u2019t the admin password.' }, 401); }
+    if(!ok){ await gate.adminFail(ip); return json({ error: 'That isn’t the admin password.' }, 401); }
     return json(await gate.adminOpen(ip, fp));
   }
   const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   const secret = auth.startsWith('admin.') ? auth.slice(6) : '';
+  const isAdmin = async () => !!(secret && await gate.adminCheck(secret, fp));
   if(p === '/api/admin' && request.method === 'GET')
-    return (secret && await gate.adminCheck(secret, fp)) ? json({ admin: true }) : json({ error: 'Not an admin session.' }, 401);
+    return (await isAdmin()) ? json({ admin: true }) : json({ error: 'Not an admin session.' }, 401);
+  if(p === '/api/admin/logout' && request.method === 'POST'){ if(secret) await gate.adminClose(secret); return json({ ok: true }); }
   /* everything below needs an admin session */
+  if(!(await isAdmin())) return json({ error: 'Not an admin session.' }, 401);
+  const url = new URL(request.url);
   const am = p.match(/^\/api\/admin\/users(?:\/([a-z0-9_-]{3,20})(?:\/games\/([A-Za-z0-9]{4,40}))?)?$/);
   if(am && request.method === 'GET'){
-    if(!(secret && await gate.adminCheck(secret, fp))) return json({ error: 'Not an admin session.' }, 401);
     if(!am[1]){
       /* every listed account, a page at a time (100), each with its summary */
-      const url = new URL(request.url);
       const names = await stubFor(DIRECTORY).dirAll(url.searchParams.get('after') || '', 100);
       const users = (await Promise.all(names.map(n => stubFor(n).adminSummary().catch(() => null)))).filter(Boolean);
       return json({ users, next: names.length === 100 ? names[names.length - 1] : null });
@@ -517,7 +698,23 @@ async function adminRoute(request, env, p, stubFor, json, body){
     if(!am[2]) return reply(await st.adminDetail());
     return reply(await st.publicGame(am[2]));
   }
-  if(p === '/api/admin/logout' && request.method === 'POST'){ if(secret) await gate.adminClose(secret); return json({ ok: true }); }
+  const mm = p.match(/^\/api\/admin\/matches(?:\/([A-Za-z0-9]{4,40}))?$/);
+  if(mm){
+    const log = stubFor(MATCHES);
+    if(!mm[1] && request.method === 'GET')
+      return reply(await log.matchList(String(url.searchParams.get('after') || '').slice(0, 80), url.searchParams.get('f') || 'all', String(url.searchParams.get('q') || '').slice(0, 40)));
+    if(mm[1] && request.method === 'GET') return reply(await log.matchGet(mm[1]));
+    if(mm[1] && request.method === 'DELETE') return reply(await log.matchDelete(mm[1]));
+  }
+  if(p === '/api/admin/stats/rebuild' && request.method === 'POST'){
+    const b = await body();
+    const after = cleanUser(b.after || '');
+    const names = await stubFor(DIRECTORY).dirAll(after, 25);
+    const pages = (await Promise.all(names.map(async n => ({ user: n, games: await stubFor(n).statsGames().catch(() => []) }))));
+    const done = names.length < 25;
+    const r = await stubFor(STATS).statsRebuildStep(!after, pages, done);
+    return json({ next: done ? null : names[names.length - 1], accounts: names.length, games: r.games });
+  }
   return json({ error: 'Not found.' }, 404);
 }
 /** Friends, requests, invites, other players' profiles and comments.
@@ -564,7 +761,7 @@ async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, js
     if(sm[1] === 'dismiss') return reply(await stub.relDismiss(String(b.code || '')));
     const o = await other(b.user);
     if(!o) return json({ error: 'No player with that username.' }, 404);
-    if(o.user === me) return json({ error: 'That\u2019s you.' }, 400);
+    if(o.user === me) return json({ error: 'That’s you.' }, 400);
     const mine = await stub.rel();
     switch(sm[1]){
       case 'request': {
@@ -582,7 +779,7 @@ async function socialRoute(request, env, p, me, secret, stub, stubFor, reply, js
         return json({ ok: true, friends: !!r.friends });
       }
       case 'accept': {
-        if(!mine.incoming.some(x => x.user === o.user)) return json({ error: 'There\u2019s no request from them.' }, 404);
+        if(!mine.incoming.some(x => x.user === o.user)) return json({ error: 'There’s no request from them.' }, 404);
         if(mine.friends.length >= FRIENDS_MAX) return json({ error: 'You already have ' + FRIENDS_MAX + ' friends.' }, 409);
         if(await o.stub.friendCount() >= FRIENDS_MAX) return json({ error: 'They already have ' + FRIENDS_MAX + ' friends.' }, 409);
         await stub.relBefriend(o.user); await o.stub.relBefriend(me);
