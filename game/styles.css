@@ -1411,3 +1411,11 @@ body.dragging .tray-head,body.dragging .rail{opacity:.35}
 .am-log{max-height:60dvh}
 .am-private{opacity:.92}
 .am-only{font-size:11px;color:var(--ui-dim);white-space:nowrap}
+
+/* --- 0.9.6: every player's place in the reveal order -------------------
+   One badge shape for every chip (similarity); the filled one is whoever
+   reveals next or is revealing now, and those already done step back. */
+.pb-ord{font-size:10.5px;font-weight:800;letter-spacing:.02em;padding:1px 6px;border-radius:99px;font-variant-numeric:tabular-nums;
+  border:1px solid color-mix(in srgb,var(--energy) 60%,transparent);color:#ffd58f;line-height:1.3;flex:none}
+.pb-ord.now{background:var(--energy);border-color:transparent;color:#2b1a02}
+.pb-ord.done{opacity:.45}

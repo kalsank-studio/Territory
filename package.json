@@ -1,6 +1,6 @@
 {
   "name": "territory",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "private": true,
   "description": "Territory card battler: the game page and its online room relay, on Cloudflare Workers.",
   "scripts": {

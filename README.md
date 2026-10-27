@@ -20,11 +20,11 @@ rooms, is in **[DEPLOY.md](DEPLOY.md)**.
 | `game/art/` | Sprite images, referenced from cards as `art/name.png`. |
 | `cards/territory-cardlist.csv` | The card list as a table; `npm run library -- cards/territory-cardlist.csv "Card list"` rebuilds `game/library.json` from it. |
 | `server/worker.js` | The online room relay: a Cloudflare Worker and one Durable Object per room. See DEPLOY.md. |
-| `server/accounts.js` | Player accounts: one Durable Object per username, holding the name, record and match history. |
+| `server/accounts.js` | Player accounts: one Durable Object per username, holding the name, record and match history. Also the admin's match log (`~matches`). |
 | `build.js` | `npm run build`: writes `dist/` — `index.html` with the CSS and JS inlined (also a working offline single file), `library.json`, `art/`. |
 | `build-library.js` | Turns a card CSV into `game/library.json` with the studio's own importer. |
 | `wrangler.json`, `package.json` | Cloudflare config and the `build` / `dev` / `deploy` / `test` scripts. |
-| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-accounts.mjs` checks the account API and `test-accounts-ui.py` signs in from two browsers; `test-round4.py` covers the mulligan, unlocking, the top bar, the passive mark and glow, the draw trigger and the Profile; `test-round3.py` covers the Play menu, the round-open screen, optional effects, discards and summoning onto a slot; `test-contrast.py` checks text contrast everywhere. `test-social.mjs` and `test-social-ui.py` cover friends, invites and comments; `test-tutorial.py` plays the tutorial. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). See *Online play* below. |
+| `test/` | `npm test` runs `test-relay.mjs` (the relay end to end against a local Worker) and `test-games.js` (whole games in every seating). Also `test-online-prep.js` (commands, replays, player views), `test-timer-sandbox.js` (turn timer, sandbox bench), `smoke.py` (the real page in Chromium via Playwright). `test-ui-changes.py` checks the card reader's token links, rearranging at the end of the reveal turn, ability pop-ups and their timer, and the Game End screen, in Chromium against a served `dist/`. `test-accounts.mjs` checks the account API and `test-accounts-ui.py` signs in from two browsers; `test-round4.py` covers the mulligan, unlocking, the top bar, the passive mark and glow, the draw trigger and the Profile; `test-round3.py` covers the Play menu, the round-open screen, optional effects, discards and summoning onto a slot; `test-contrast.py` checks text contrast everywhere. `test-social.mjs` and `test-social-ui.py` cover friends, invites and comments; `test-tutorial.py` plays the tutorial. `test-online.py` plays online in real browsers through a local Worker (lobby, a whole game, hidden hands, dropped connections, reloads on both sides, a bot standing in, three players). `test-matches.mjs`, `test-matches-ui.py` and `test-matches-online.py` cover the match log (see *Match log* at the end). See *Online play* below. |
 | *(older)* | The earlier headless suites (`test-targeting.js`, `test-abilities.js`, `test-flow.js` and the rest) live with the original prototype files, not in this folder. |
 
 ## Layout of `game.js`
@@ -39,8 +39,8 @@ rooms, is in **[DEPLOY.md](DEPLOY.md)**.
    - **4c. What each player may see** — `playerView(state, seat)`, `emit`, `stateDigest`.
 5. **Ability engine** — `resolveTargets` and `applyEffect`. The effect queue pauses
    for player choices (currently only Discard) and resumes from `resolveDiscard`.
-6. **Bot** — greedy placement, weighted toward slots whose condition it meets and
-   planets it is losing.
+6. **Bot** — builds income for all but the last two rounds, then plans the closing two
+   rounds to win the most planets (see 0.9.6 at the end).
 7. **Rendering** — one `render()` rebuilds the screen from state; no framework.
 8. **Events** — delegated click, input and change handlers keyed off `data-act`, plus the
    pointer drag system (`startDrag` / `moveGhost` / `endDrag`) and `dropSelected`, the one
@@ -90,7 +90,8 @@ The parts:
 
 - **Your name** (`PROFILE.name`). It fills in the first human seat at a local table and is
   your name online (the Play screen's name field is the same setting).
-- **Record**: played, wins, losses, draws, win rate — tiles across the top.
+- **Record**: played, wins, losses, draws, win rate — tiles across the top. Games against
+  people only: a game with a bot in it is in the history but not counted (see 0.9.5 at the end).
 - **Match history**: every finished game, newest first (`recordGame`, called from
   `finishGame` on this device or the host, and from `guestView` when a guest sees the
   game end), up to 200: result, opponents (bots marked), local or online, when, and
@@ -842,7 +843,7 @@ Every finished game keeps a **replay**: its seed, seats, decks, the library it w
 
 ### Stats
 
-Profile → **Stats**, added up from the match history (`gameStats` stores the numbers with each game; games from before 0.8 count only toward planets seen):
+Profile → **Stats**, added up from the match history (`gameStats` stores the numbers with each game; games from before 0.8 count only toward planets seen). Since 0.9.5, games against people only:
 
 - **Cards you played** — play rate (share of your games), game win % (games won when you played it), planet win % (when it ended the game on a planet, how often you won that planet). Sort by any column.
 - **Planets** — how often each came up, how often you won it, and for each of your slots there, how often the card in it met the condition when rewards were checked.
@@ -886,7 +887,7 @@ The Studio opens only for an admin (`isAdmin()`, `viewAdminGate`). The password 
 
 ## One shared deck, menu look, sign-in nudge (0.9.2)
 
-- **One shared deck.** New game (and the online lobby, for the host) has **Decks: Own deck each / One shared deck**. Shared, the chosen deck goes in once per player, shuffled together into one pile every player draws from (`G.sharedDeck`; every `p.deck` is the same array — `relinkSharedDeck` restores that after a saved game is read back). A card belongs to whoever draws it; a mulligan shuffles back into the shared pile. Replays and exports carry the choice. `test/test-shared-deck.js` plays 2-, 3- and 4-player games and replays them.
+- **One shared deck.** New game (and the online lobby, for the host) has **Decks: Own deck each / One shared deck**. Shared, one shuffled copy of the chosen deck is the pile every player draws from (a fresh copy when it runs out, since 0.9.6) (`G.sharedDeck`; every `p.deck` is the same array — `relinkSharedDeck` restores that after a saved game is read back). A card belongs to whoever draws it; a mulligan shuffles back into the shared pile. Replays and exports carry the choice. `test/test-shared-deck.js` plays 2-, 3- and 4-player games and replays them.
 - **Main menu.** The title is the logo image (`game/art/logo.png`, its black blended away), the menu titles are Orbitron (`game/fonts/`, built into the page), and the orbs are gone.
 - **Play screen.** Signed out, a banner at the top links to Social → Profile: "Sign in or create an account to record your matches and add friends! No personal info required."
 - **Studio without the password** is read only: Cards, Tokens, Planets and Decks can be browsed; nothing can be changed.
@@ -908,3 +909,78 @@ Play → **Join a game** now lists **Open lobbies**: every public room that is w
 In the lobby, the host has a **Private lobby** switch. Ticking it removes the room from the search immediately; friends still join with the code, the link or an invite. Unticking it lists the room again. A room also drops out of the search as soon as it fills, the game starts, the host disconnects, or it closes; it comes back if the host returns to the lobby with seats free.
 
 How it works: the host's device posts its listing to `POST /api/rooms/<code>/listing` (checked against the host's seat token); the room keeps the registry in the `~lobbies` account object up to date on joins, leaves and expiry; `GET /api/lobbies` reads it. No new Durable Object classes or migrations. `test/test-lobby-search.py` checks it.
+
+## Match log, and records without bots (0.9.5)
+
+**Records and stats count games against people only.** A game with a bot in any seat (`isVsBots(g)`:
+some `players[i].bot`; a bot standing in for a dropped player isn't one) stays in the match history,
+marked *not counted*, but leaves out of:
+
+- the Profile's record tiles (`profileStats`, which also returns `vsBots`) and its Stats tab (`statsFrom`
+  filters first), with a line under the tiles saying how many were left out;
+- the server's records — `recordOf` in `server/accounts.js` for `record()`, `publicProfile`, `adminSummary`
+  (each with `vsBots`) — so friends lists, other players' profiles and Studio → Users agree;
+- everyone's stats (`addGames` only passes `counted` games to `~stats`). Games merged before 0.9.5 are
+  recounted by Studio → Matches → **Recount everyone's stats** (`POST /api/admin/stats/rebuild`, 25
+  accounts a call into a scratch copy, `statsRebuildStep`, swapped in at the end).
+
+**The match log.** Every game finished on the website, signed in or not, bots or not, sandbox included
+(not the tutorial or replays), goes to one more `Account` object, `~matches`:
+
+| Client (`game.js`) | |
+| --- | --- |
+| `submitMatch()` | called from `finishGame` after `recordGame`. Skips a guest's view (`G.isView` — online, the host sends), the tutorial, replays, and `file://` copies (`accountsAvailable()`). Builds `matchEntry()` once per `G.gameId` and queues it. |
+| `matchEntry()` | `{id, at, started, mode, sandbox, rounds, planets, sharedDeck, players:[{name, emoji, bot, standIn}], won, winner, reason, rows, log, replay, v}`. `started` is read from the first 8 characters of `G.gameId` (`Date.now()` in base 36), so nothing new goes into `G`. The log is the whole `G.log`; a line with `vis` carries `p:[seats]`. |
+| `flushMatches()` | posts the queue (`MATCHQ_KEY`, at most 12 waiting) to `POST /api/matches`; on success or a final refusal (400, 413) an entry is dropped, otherwise (offline, 429, 5xx, a server without the log) it waits. Runs after each game, 2.5 s after the page opens, and on the `online` event. |
+| Studio → **Matches** | `matchesBody` / `matchDetailHTML`, state in `AM`. Admin only (hidden read-only, like Users). Filter chips (`AM_FILTERS`) and search go to the server; 40 a page with *Load more*. A match opens to its seats (account or *no account*, bot, stand-in), planets, log (🔒 lines name who saw them), **Watch replay** (`startReplay(gameFile(amEntry(m)))`; `stopReplay` returns to the Studio because `UI.rp.back` is `'studio'`), **Export game**, **Delete** (tap twice). |
+
+| Server (`accounts.js`) | |
+| --- | --- |
+| `POST /api/matches` | no sign-in. `cleanMatch` checks and trims it (ids, 1–4 players, strings clipped, ≤ `MATCH_BYTES_MAX`). `matchAdd`: 60 an hour per address (`rl:`), once per id (`x:`), summary under `i:<countdown>:<id>` so key order is newest first, log `l:` and replay `r:` apart. Keeps `MATCHES_MAX` (2,000); `matchTrim` drops the oldest. |
+| account links | `POST /api/account/games` returns the seats it was sent (`{id, seat}`) and calls `matchLink(user, seats)`: the match's `accounts[seat]` becomes that username. A link that arrives before its match waits under `p:<id>` (a week at most). |
+| `GET /api/admin/matches?after=&f=&q=` | `matchList`: pages of 40, scanning at most 1,000 summaries per call for the filter and search; `next` is the last key scanned. |
+| `GET` · `DELETE /api/admin/matches/<id>` | `matchGet` (summary + log + replay) · `matchDelete`. |
+
+Tests: `test/test-matches.mjs` (the API: adding, dedupe, filters, links both ways, records and stats without
+bots, the rebuild, deleting, the limits), `test/test-matches-ui.py` (games played in Chromium reach the log —
+bots only, a person against a bot, sandbox, offline then online, signed in — and the Studio tab: filters,
+search, detail, export, replay and back, delete, recount), `test/test-matches-online.py` (an online game is
+logged once, by the host, with the guest's account on their seat). `test-social.mjs` and
+`test-admin-users.py` now give their games a person as the opponent and check a bot game isn't counted.
+
+## The bot, the turn order, one copy of a shared deck (0.9.6)
+
+**The bot** (section 6 of `game.js`) plays in two modes, by round:
+
+- **Building — every round but the last two** (rounds 1–4 of 6). `botEconomyPlan` puts a card down only
+  where it meets a slot's condition and the slot pays: worth the reward × the harvests still to come, plus
+  any Energy or cards its own on-reveal ability earns, plus a little for its Power, minus its cost.
+  Cards that earn nothing stay in hand, so planets keep their room. Two balances keep it honest:
+  `botCardHunger` makes draw slots worth less when the hand already costs more than the Energy coming in
+  (and more when Energy will outrun the hand), and the cost weight drops when Energy is plentiful.
+- **Closing — the last two rounds.** `botThreats` estimates, per planet, the most Power any opponent ends
+  on: what they show face up plus the Power they have added per round so far, spread over the rounds left
+  and the slots they still have open there. `botClosingPlan` then searches every set of up to three cards
+  per planet (within the free slots and both rounds' Energy: this round's plus next round's income) for
+  the line that wins the most planets outright, then the cheapest such line, then the one with the least
+  Power to spare. Planets it already wins outright get nothing. In the next-to-last round the cards that
+  fit go down now (ones that earn next round first) and the rest wait; spare Energy can still buy a slot
+  that pays once. The plan is made again in the last round with what has been revealed. In the last
+  round, Energy and cards left over reinforce the planets still being fought for (never one already won).
+- **Fair play.** The bot reads only what its seat could see: its own cards and opponents' face-up cards.
+  Hidden cards, hands and decks are never read.
+- **Reveal order.** "The next card you play" effects flip first, then cheapest first.
+
+Tuning lives in `BOT` (`drawWorth`, `powerWorth`, `costWeight`, `candidates`, and the switches
+`scarcity`, `reinforce`, `balance`). Against the 0.9.5 bot over 2-player games it won 38–22 with the
+built-in 12–16 card decks and 28–12 with the shipped 46-card *Card list* deck.
+
+**Turn order in the top bar.** Every chip in the players bar carries its place in the reveal order
+(1st, 2nd, 3rd…). The filled badge is whoever reveals next — the first player during placement, whoever is
+turning cards over during the reveal — and those who have already revealed fade back (`playersBarHTML`,
+`.pb-ord`).
+
+**One shared deck is one copy.** A shared deck is now a single shuffled copy of the chosen deck, not one
+per player (`sharedCopy`). When it runs out, a fresh copy is shuffled in (`refillShared`, logged, counted in
+`G.sharedCopies`). The new cards get ids from the game's own stream, so replays still match.
+`test/test-shared-deck.js` checks the pile is one copy per refill and that a 7-card deck is refilled.

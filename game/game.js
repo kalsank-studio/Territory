@@ -1775,11 +1775,12 @@ function newGame(opts){
   const planetCount = clamp(s.planets|0, 1, Math.max(1, LIB.planets.length));
 
   const players = [];
-  /* One shared deck: the chosen deck once per player, shuffled together into a
-     single pile everyone draws from. A card belongs to whoever draws it. */
+  /* One shared deck: one copy of the chosen deck, shuffled, that every player
+     draws from. A card belongs to whoever draws it. When it runs out, a fresh
+     copy is shuffled in (sharedCopy / drawCard). */
   const shared = !!s.sharedDeck && !s.stacks;
   const sharedDef = shared ? (deckById(s.sharedDeckId) || deckById(s.deckOf[0]) || LIB.decks[0]) : null;
-  const pile = shared ? shuffle(Array.from({length:n}, ()=>(sharedDef.cards||[]).map(id=>defById(id)).filter(Boolean).map(d=>{ const c = instance(d, 0); c.owner = null; return c; })).flat()) : null;
+  const pile = shared ? sharedCopy(sharedDef) : null;
   for(let i=0;i<n;i++){
     const deck = deckById(s.deckOf[i] || LIB.decks[0].id);
     /* A stacked deck (the tutorial) is drawn in the order given; any other is shuffled. */
@@ -1815,7 +1816,7 @@ function newGame(opts){
     online: !!s.online,
     mulligans: s.mulligan!==false && !s.tutorial,   // one mulligan each, in round 1
     tutorial: !!s.tutorial,
-    sharedDeck: shared, sharedDeckName: shared ? sharedDef.name : null,
+    sharedDeck: shared, sharedDeckName: shared ? sharedDef.name : null, sharedDeckId: shared ? sharedDef.id : null, sharedCopies: shared ? 1 : 0,
     gameId: Date.now().toString(36) + uiRnd(1e9).toString(36),   // for the match history; not part of the rules
     cmdLog:[],     // every accepted command, in order: what a replay or a server re-applies
     events:[],     // what happened, for the screen to animate: {n, k, …} (see emit)
@@ -1920,9 +1921,26 @@ function logRound(){ G.log.push({rd:true, t:'Round '+Math.max(1,G.round)}); }
 /** A line in the game log. `vis` (a list of seats) keeps a line private. */
 function say(t, who, vis){ G.log.push(vis ? {t, who, vis} : {t, who}); }
 
+/** One shuffled copy of the shared deck, its cards nobody's until drawn. */
+function sharedCopy(def){
+  return shuffle((def && def.cards || []).map(id=>defById(id)).filter(Boolean).map(d=>{ const c = instance(d, 0); c.owner = null; return c; }));
+}
+/** The shared pile ran out: shuffle a fresh copy of the deck into it. The pile
+    is the same array for every player, so it is refilled in place. */
+function refillShared(){
+  const def = deckById(G.sharedDeckId) || (G.setup && deckById(G.setup.sharedDeckId));
+  const fresh = sharedCopy(def);
+  if(!fresh.length) return false;
+  G.players[0].deck.push(...fresh);
+  G.sharedCopies = (G.sharedCopies||1) + 1;
+  say(`The shared deck ran out \u2014 a fresh copy (${fresh.length} cards) is shuffled in.`);
+  return true;
+}
+
 /** `quiet` is the opening deal: no "no cards left" line, and nothing fires,
     because a hand being dealt isn't a card being drawn. */
 function drawCard(p, silent, quiet){
+  if(!p.deck.length && G.sharedDeck && !G.isView) refillShared();
   if(!p.deck.length){ if(!silent) say(`${p.name} has no cards left to draw.`, p.idx); return null; }
   const card = p.deck.pop();
   if(G.sharedDeck) card.owner = p.idx;            // from the shared pile: it's yours once you draw it
@@ -4295,8 +4313,210 @@ function togglePickMode(i){
 }
 
 /* ------------------------------------------------------------------
-   6. BOT  — good enough to test pacing against
+   6. BOT
+   Two modes, by round:
+   - Building (every round but the last two): play only cards that earn — a
+     card goes down where it meets a slot's condition and the slot pays, worth
+     its reward times the harvests left. Nothing else is played, so planets keep
+     room for the endgame and Energy keeps building.
+   - Closing (the last two rounds): plan across both rounds at once. For every
+     planet, how much Power it takes to win it outright against what the
+     opponents show plus the Power they've been adding per round on average;
+     then the set of cards (within both rounds' Energy and the free slots) that
+     wins the most planets, and of those the cheapest, so nothing is spent on a
+     planet that's already won. The cards that fit this round go down now; the
+     rest wait, and the plan is made again next round with what's been revealed.
+   The bot only uses what its player could know: its own cards, and opponents'
+   face-up cards. Hidden cards, hands and decks are never read.
    ------------------------------------------------------------------ */
+
+const BOT = { drawWorth:1.5, powerWorth:0.25, costWeight:0.6, candidates:8, scarcity:true, reinforce:true, balance:true };
+const botCardPower = c => Math.max(0, powerOf(c));
+/** Energy (or cards, at drawWorth) a slot's reward is worth, once. */
+function botRewardWorth(rew, p){
+  if(!rew || rew.type==='none') return 0;
+  if(rew.type==='energy') return rew.amount||0;
+  if(rew.type==='draw') return (rew.amount||0) * (p.deck.length ? BOT.drawWorth * botCardHunger(p) : 0);
+  return 0;
+}
+/** How much more cards are worth than usual right now: a hand that already
+    costs more than the Energy to come wants Energy, not cards; a hand that
+    Energy will outrun wants cards. */
+function botCardHunger(p){
+  if(!BOT.balance || !G) return 1;
+  const left = Math.max(1, G.rounds - G.round + 1);
+  const coming = p.energy + botIncomeNext(p) * left;
+  const demand = p.hand.reduce((t,c)=>t + c.cost, 0) + 1;
+  return Math.max(0.15, Math.min(1.6, coming / demand));
+}
+/** What a card's own on-reveal ability earns: Energy, or cards. */
+function botFxWorth(card){
+  return (card.fx||[]).reduce((t,f)=>{
+    if(!f || f.when) return t;
+    if(f.v==='gainEnergy') return t + (f.n || 1);
+    if(f.v==='draw' && f.from!=='grave') return t + (f.n || 1) * BOT.drawWorth;
+    return t;
+  }, 0);
+}
+/** Energy coming in at the start of next round from what's on the board now. */
+function botIncomeNext(p){
+  let e = RULES.energyPerRound;
+  G.planets.forEach((pl,pi)=>pl.board[p.idx].forEach((c,si)=>{
+    const rew = pl.slots[si].rew;
+    if(c && rew && rew.type==='energy' && slotMet(pi, si, c, p.idx)) e += rew.amount||0;
+  }));
+  return e;
+}
+/** Building: the cards that earn, greedily by worth, within `budget`.
+    `taken` holds slots ("planet:slot") and `skip` card uids kept for later. */
+function botEconomyPlan(p, budget, harvests, taken, skip){
+  const plan = [], used = new Set(skip||[]), held = new Set(taken||[]);
+  let spent = 0;
+  /* Energy is only worth saving if there will be cards to spend it on: with
+     more coming in than the hand could ever cost, a card's cost hardly matters. */
+  let cw = BOT.costWeight;
+  if(BOT.scarcity){
+    const coming = p.energy + botIncomeNext(p) * Math.max(0, G.rounds - G.round);
+    const demand = p.hand.reduce((t,c)=>t + c.cost, 0) + (RULES.drawPerRound * Math.max(0, G.rounds - G.round)) * 3;
+    cw *= Math.max(0.15, Math.min(1, demand / Math.max(1, coming)));
+  }
+  for(;;){
+    let best = null;
+    p.hand.forEach(c=>{
+      if(used.has(c.uid) || spent + c.cost > budget) return;
+      G.planets.forEach((pl,pi)=>pl.board[p.idx].forEach((sl,si)=>{
+        if(sl || held.has(pi+':'+si) || !slotMet(pi, si, c, p.idx)) return;
+        const v = botRewardWorth(pl.slots[si].rew, p) * harvests + botFxWorth(c)
+                + BOT.powerWorth * botCardPower(c) - cw * c.cost;
+        if(v > 0 && (!best || v > best.v + 1e-9 || (Math.abs(v-best.v) < 1e-9 && c.cost < best.card.cost))) best = {card:c, pi, si, v};
+      }));
+    });
+    if(!best) break;
+    plan.push(best); used.add(best.card.uid); held.add(best.pi+':'+best.si); spent += best.card.cost;
+  }
+  return plan;
+}
+/** Per planet: the most Power any one opponent is expected to end on — what
+    they show face up, plus their average Power added per round so far, spread
+    over the rounds left and over the slots they still have open there. */
+function botThreats(p){
+  const done = Math.max(1, G.phase==='reveal' ? G.round : G.round - 1);     // rounds already revealed
+  const left = Math.max(0, G.rounds - G.round + (G.phase==='placement' ? 1 : 0));
+  const scores = G.planets.map(pl=>planetScore(pl));
+  const threat = G.planets.map(()=>0);
+  G.players.forEach(q=>{
+    if(q.idx===p.idx) return;
+    const shown = scores.reduce((t,sc)=>t + sc[q.idx], 0);
+    const open = G.planets.map(pl=>pl.board[q.idx].filter(c=>!c || !c.faceUp).length);
+    const openAll = open.reduce((a,b)=>a+b, 0);
+    const add = shown / done * left;
+    G.planets.forEach((pl,pi)=>{
+      const t = scores[pi][q.idx] + (openAll ? add * open[pi] / openAll : 0);
+      threat[pi] = Math.max(threat[pi], t);
+    });
+  });
+  return threat;
+}
+/** Closing: the card set that wins the most planets within `budget`, then the
+    cheapest such set, then the one with the least Power to spare.
+    Returns {wins, cost, sets:[[planetIdx, [cards]]…]}. */
+function botClosingPlan(p, budget){
+  const threat = botThreats(p);
+  const mine = G.planets.map(pl=>pl.board[p.idx].reduce((t,c)=>t + (c ? botCardPower(c) : 0), 0));
+  const need = threat.map((t,pi)=>Math.floor(t - mine[pi] + 1e-9) + 1);      // strictly more than the threat
+  const cap = G.planets.map(pl=>pl.board[p.idx].filter(c=>!c).length);
+  const cards = p.hand.filter(c=>c.cost <= budget && botCardPower(c) > 0)
+                      .sort((a,b)=>botCardPower(b)-botCardPower(a) || a.cost-b.cost).slice(0, 18);
+  const bit = cards.map((_,i)=>1<<i);
+  /* every minimal set of up to `cap` cards that covers the need, cheapest first */
+  const cand = G.planets.map((pl,pi)=>{
+    if(need[pi] <= 0 || !cap[pi]) return [];
+    const out = [];
+    const walk = (start, pick, pw, cost)=>{
+      if(pw >= need[pi]){ out.push({mask:pick.reduce((m,i)=>m|bit[i],0), idx:pick.slice(), cost, spare:pw-need[pi]}); return; }
+      if(pick.length >= cap[pi]) return;
+      for(let i=start;i<cards.length;i++){
+        if(cost + cards[i].cost > budget) continue;
+        pick.push(i); walk(i+1, pick, pw + botCardPower(cards[i]), cost + cards[i].cost); pick.pop();
+      }
+    };
+    walk(0, [], 0, 0);
+    out.sort((a,b)=>a.cost-b.cost || a.spare-b.spare);
+    return out.slice(0, G.planets.length > 6 ? 4 : BOT.candidates);
+  });
+  const base = need.filter(n=>n<=0).length;                     // won already, with nothing more
+  const order = G.planets.map((_,i)=>i).filter(i=>cand[i].length);
+  let best = {wins:base, cost:0, spare:0, pick:[]};
+  const better = (w,c,s)=> w>best.wins || (w===best.wins && (c<best.cost || (c===best.cost && s<best.spare)));
+  let nodes = 0;
+  const dfs = (k, used, wins, cost, spare, pick)=>{
+    if(++nodes > 300000) return;                                // a hard ceiling: it's a phone
+    if(better(wins, cost, spare)) best = {wins, cost, spare, pick:pick.slice()};
+    if(k >= order.length || wins + (order.length - k) < best.wins) return;
+    const pi = order[k];
+    for(const c of cand[pi]){
+      if(c.mask & used || cost + c.cost > budget) continue;
+      pick.push([pi, c]); dfs(k+1, used | c.mask, wins+1, cost+c.cost, spare+c.spare, pick); pick.pop();
+    }
+    dfs(k+1, used, wins, cost, spare, pick);
+  };
+  dfs(0, 0, base, 0, 0, []);
+  return {wins:best.wins, cost:best.cost, sets:best.pick.map(([pi,c])=>[pi, c.idx.map(i=>cards[i])])};
+}
+/** Put a planet's cards in its free slots, each where it earns if it can. */
+function botSlotCards(p, pi, list, taken){
+  const out = [];
+  const free = G.planets[pi].board[p.idx].map((c,si)=>c ? null : si).filter(si=>si!=null && !taken.has(pi+':'+si));
+  list.slice().sort((a,b)=>b.cost-a.cost).forEach(card=>{
+    if(!free.length) return;
+    let at = free.findIndex(si=>slotMet(pi, si, card, p.idx) && botRewardWorth(G.planets[pi].slots[si].rew, p) > 0);
+    if(at < 0) at = 0;
+    const si = free.splice(at, 1)[0];
+    taken.add(pi+':'+si);
+    out.push({card, pi, si, earns: slotMet(pi, si, card, p.idx) && botRewardWorth(G.planets[pi].slots[si].rew, p) > 0});
+  });
+  return out;
+}
+/** This round's placements for a bot: [{card, pi, si}…]. */
+function botPlacements(p){
+  const energy = p.energy - p.planned, left = G.rounds - G.round;      // harvests still to come
+  if(left >= 2) return botEconomyPlan(p, energy, left);
+  const final = left <= 0;
+  const income = final ? 0 : botIncomeNext(p);
+  const plan = botClosingPlan(p, energy + income);
+  const taken = new Set();
+  let slotted = [];
+  plan.sets.forEach(([pi, list])=>{ slotted = slotted.concat(botSlotCards(p, pi, list, taken)); });
+  if(final){
+    const out = slotted.filter(x=>x.card.cost <= energy);
+    if(!BOT.reinforce || !plan.sets.length) return out;
+    /* The threats are estimates: Energy and cards left over go to the planets
+       still being fought for (never to one already won outright), the
+       closest race first. */
+    let left = energy - out.reduce((t,x)=>t + x.card.cost, 0);
+    const usedU = new Set(out.map(x=>x.card.uid));
+    const fought = plan.sets.map(([pi])=>pi);
+    p.hand.filter(c=>!usedU.has(c.uid) && botCardPower(c) > 0).sort((a,b)=>botCardPower(b)-botCardPower(a)).forEach(c=>{
+      if(c.cost > left) return;
+      const pi = fought.find(i=>G.planets[i].board[p.idx].some((sl,si)=>!sl && !taken.has(i+':'+si)));
+      if(pi==null) return;
+      const got = botSlotCards(p, pi, [c], taken);
+      if(got.length){ out.push(...got); left -= c.cost; }
+    });
+    return out;
+  }
+  /* the next-to-last round: what fits now goes down now (cards that earn next
+     round first, then the dearest); the rest waits for the last round */
+  slotted.sort((a,b)=>(b.earns-a.earns) || b.card.cost-a.card.cost);
+  const now = [], later = [];
+  let spent = 0;
+  slotted.forEach(x=>{ if(spent + x.card.cost <= energy){ now.push(x); spent += x.card.cost; } else later.push(x); });
+  const laterCost = later.reduce((t,x)=>t + x.card.cost, 0);
+  /* spare Energy beyond what the last round's cards need can still earn once */
+  const spare = Math.min(energy - spent, energy - spent + income - laterCost);
+  const econ = spare > 0 ? botEconomyPlan(p, spare, 1, taken, slotted.map(x=>x.card.uid)) : [];
+  return now.concat(econ);
+}
 
 function botAct(seat){
   if(!G || G.over || !botsDrive()) return;
@@ -4308,30 +4528,9 @@ function botAct(seat){
 
   if(G.phase==='placement'){
     if(!placingSeats().includes(p.idx)) return;
-    let guard = 20;
-    while(guard-- > 0){
-      const playable = p.hand.filter(c=>canPlace(p,c));
-      if(!playable.length) break;
-      playable.sort((a,b)=> (powerOf(b)/Math.max(1,b.cost)) - (powerOf(a)/Math.max(1,a.cost)));
-      let done = false;
-      for(const card of playable){
-        const spots = [];
-        G.planets.forEach((pl,pi)=>pl.board[p.idx].forEach((s,si)=>{
-          if(s) return;
-          const sc = planetScore(pl);
-          const mine = sc[p.idx], best = Math.max(...sc.filter((_,i)=>i!==p.idx), 0);
-          let v = slotMet(pi, si, card, p.idx) ? 6 : 0;
-          v += (best - mine) * 0.35;            // contest planets we are losing
-          v += botRand()*2;
-          spots.push({pi,si,v});
-        }));
-        if(!spots.length) continue;
-        spots.sort((a,b)=>b.v-a.v);
-        if(send({t:'place', uid:card.uid, p:spots[0].pi, s:spots[0].si}).ok){ done = true; break; }
-      }
-      if(!done) break;
-      if(p.hand.length===0) break;
-    }
+    let plan = [];
+    try{ plan = botPlacements(p); }catch(e){ console.error('bot plan', e); plan = []; }
+    plan.forEach(x=>{ if(p.hand.includes(x.card) && !G.planets[x.pi].board[p.idx][x.si] && canPlace(p, x.card)) send({t:'place', uid:x.card.uid, p:x.pi, s:x.si}); });
     send({t:'lock'});
     return;
   }
@@ -4346,7 +4545,10 @@ function botAct(seat){
       send({t:'endReveal'});
       return;
     }
-    rest.sort((a,b)=>a.card.cost-b.card.cost);
+    /* "the next card you play" effects first, so they land on the cards after
+       them; then cheapest first */
+    const primes = c => (c.fx||[]).some(f=>f && !f.when && f.target && f.target.rule==='next') ? 0 : 1;
+    rest.sort((a,b)=>primes(a.card)-primes(b.card) || a.card.cost-b.card.cost);
     send({t:'flip', uid:rest[0].card.uid});
   }
 }
@@ -4926,7 +5128,7 @@ function viewSetup(){
       </div>
       ${s.sharedDeck ? `<label class="field"><span>Shared deck</span>
         <select data-act="shareddeck">${LIB.decks.map(d=>`<option value="${d.id}" ${sharedId===d.id?'selected':''}>${esc(d.name)} (${d.cards.length})</option>`).join('')}</select></label>
-      <p class="tiny muted" style="margin:0">Everyone draws from one pile: this deck once per player, shuffled together. A card is yours once you draw it.</p>` : ''}
+      <p class="tiny muted" style="margin:0">Everyone draws from one copy of this deck. A card is yours once you draw it; if the pile runs out, a fresh copy is shuffled in.</p>` : ''}
     </div>`;
 
   const short = LIB.decks.filter(d=>d.cards.length<6);
@@ -5093,17 +5295,23 @@ function viewBoard(){
 /** Everyone at the table, one chip each, in turn order: Energy and cards in
     hand, whether they've locked in (placing at once), and who reveals first.
     The same chip shape for every player, so the row reads at a glance. */
+const ordinal = n => n + (n%100>=11 && n%100<=13 ? 'th' : ['th','st','nd','rd'][n%10] || 'th');
 function playersBarHTML(meIdx, simulPlace){
   const order = (G.order && G.order.length) ? G.order : G.players.map(p=>p.idx);
-  const first = order[0];
+  /* Every chip carries its place in the reveal order. The filled badge is whoever
+     reveals next (in placement, the first player; in the reveal, whoever is turning
+     cards over now); players who have already revealed this round fade back. */
+  const revealing = G.phase==='reveal' && !G.over;
+  const now = revealing ? (G.revealer||0) : 0;
   return `<div class="lockbar players-bar" role="status" aria-label="Players">${order.map(i=>{
     const q = G.players[i], me = i===meIdx;
     const en = me ? shownEnergy(q) : q.energy;
     const state = simulPlace ? (q.locked ? '\u2713 locked in' : 'placing\u2026') : '';
+    const pos = order.indexOf(i);
+    const ord = `<span class="pb-ord ${pos===now?'now':''} ${revealing&&pos<now?'done':''}" title="${pos===now ? (revealing?'Revealing now':'Reveals first this round') : ordinal(pos+1)+' to reveal this round'}">${ordinal(pos+1)}</span>`;
     return `<span class="lockchip ${simulPlace&&q.locked?'in':''} ${simulPlace&&!q.locked?'placing':''} ${me?'me':''}" style="--pc:${PCOLORS[i]}">
-      <span class="dot" style="--pc:${PCOLORS[i]}"></span><b class="pb-name">${q.emoji?`<span class="pb-emo">${esc(q.emoji)}</span>`:''}${esc(me?'You':q.name)}</b>
+      ${ord}<span class="dot" style="--pc:${PCOLORS[i]}"></span><b class="pb-name">${q.emoji?`<span class="pb-emo">${esc(q.emoji)}</span>`:''}${esc(me?'You':q.name)}</b>
       <span class="pb-stat" ${me?'data-pben':''} aria-label="${en} Energy">\u26A1${en}</span><span class="pb-stat" aria-label="${q.hand.length} cards in hand">\u{1F0CF}${q.hand.length}</span>
-      ${i===first ? `<span class="pb-first" title="Reveals first this round">1st</span>` : ''}
       ${state ? `<i>${state}</i>` : ''}
     </span>`;
   }).join('')}</div>`;
@@ -8683,7 +8891,7 @@ function viewLobby(){
       <button class="chip ${!L.sharedDeck?'on':''}" data-on="deckmode" data-v="own">Own deck each</button>
       <button class="chip ${L.sharedDeck?'on':''}" data-on="deckmode" data-v="shared">One shared deck</button>
     </div>
-    ${L.sharedDeck ? `<label class="field"><span>Shared deck \u2014 once per player, shuffled together</span>
+    ${L.sharedDeck ? `<label class="field"><span>Shared deck \u2014 one copy for everyone, a fresh copy when it runs out</span>
       <select data-on-input="shareddeck">${opts(decks.map(d=>d.id), L.sharedDeckId, id=>{ const d = decks.find(x=>x.id===id); return esc(d.name)+' ('+d.n+')'; })}</select></label>` : ''}
     <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">
       <input type="checkbox" data-on-input="private" ${L.private?'checked':''} style="width:auto">
@@ -8882,7 +9090,7 @@ function recordGame(){
    go straight away (offline, or a server without the log yet) waits in this
    browser (MATCHQ_KEY) and goes the next time the page is open and online. */
 const MATCHQ_KEY = KEY + '.matchq', MATCHQ_MAX = 12;
-const GAME_VERSION = '0.9.5';
+const GAME_VERSION = '0.9.6';
 /** A game with a bot in a seat. Those stay in the history but not in the record or the stats. */
 function isVsBots(g){ return !!(g && (g.players||[]).some(p=>p && p.bot)); }
 function matchEntry(){
